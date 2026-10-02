@@ -28,7 +28,7 @@ estado_pedido = postgresql.ENUM(
     create_type=False,
 )
 forma_pago = postgresql.ENUM("TRANSFERENCIA", "EFECTIVO", name="forma_pago", create_type=False)
-unidad_venta = postgresql.ENUM("PIEZA", "UNIDAD", name="unidad_venta", create_type=False)
+unidad_venta = postgresql.ENUM("PIEZA", "UNIDAD", "DOCENA", name="unidad_venta", create_type=False)
 regla_precio_combo = postgresql.ENUM(
     "MAYOR_VALOR",
     "PROMEDIO",
@@ -59,6 +59,15 @@ def upgrade() -> None:
         "categoria",
         sa.Column("codigo", sa.String(length=50), nullable=False),
         sa.Column("nombre", sa.String(length=120), nullable=False),
+        sa.Column("descripcion_publica", sa.String(), nullable=True),
+        sa.Column("foto_url", sa.String(length=500), nullable=True),
+        sa.Column("orden", sa.Integer(), nullable=False),
+        sa.Column("visible_cliente", sa.Boolean(), nullable=False),
+        sa.Column("es_automatica", sa.Boolean(), nullable=False),
+        sa.Column("cantidad_minima_total", sa.Integer(), nullable=True),
+        sa.Column("prioridad", sa.Integer(), nullable=False),
+        sa.Column("acumulable", sa.Boolean(), nullable=False),
+        sa.Column("activa", sa.Boolean(), nullable=False),
         sa.Column("id", sa.Integer(), nullable=False),
         sa.PrimaryKeyConstraint("id"),
     )
@@ -81,7 +90,8 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), nullable=False),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_marca_nombre", "marca", ["nombre"], unique=True)
+    op.create_index("ix_marca_nombre", "marca", ["nombre"], unique=False)
+    op.execute("CREATE UNIQUE INDEX uq_marca_nombre_lower ON marca (LOWER(nombre))")
 
     op.create_table(
         "motivo_gasto",
@@ -89,7 +99,8 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), nullable=False),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_motivo_gasto_nombre", "motivo_gasto", ["nombre"], unique=True)
+    op.create_index("ix_motivo_gasto_nombre", "motivo_gasto", ["nombre"], unique=False)
+    op.execute("CREATE UNIQUE INDEX uq_motivo_gasto_nombre_lower ON motivo_gasto (LOWER(nombre))")
 
     op.create_table(
         "usuario",
@@ -114,17 +125,36 @@ def upgrade() -> None:
     op.create_table(
         "producto",
         sa.Column("codigo", sa.String(length=50), nullable=False),
-        sa.Column("categoria_id", sa.Integer(), nullable=False),
         sa.Column("nombre", sa.String(length=140), nullable=False),
         sa.Column("descripcion", sa.String(), nullable=True),
         sa.Column("fotos", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.Column("precio", sa.Numeric(12, 2), nullable=False),
         sa.Column("unidad_venta", unidad_venta, nullable=False),
+        sa.Column("activo", sa.Boolean(), nullable=False),
         sa.Column("id", sa.Integer(), nullable=False),
-        sa.ForeignKeyConstraint(["categoria_id"], ["categoria.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("ix_producto_codigo", "producto", ["codigo"], unique=True)
+    op.create_index("ix_producto_nombre", "producto", ["nombre"], unique=False)
+
+    op.create_table(
+        "producto_categoria",
+        sa.Column("producto_id", sa.Integer(), nullable=False),
+        sa.Column("categoria_id", sa.Integer(), nullable=False),
+        sa.Column("precio", sa.Numeric(12, 2), nullable=False),
+        sa.Column("descripcion_publica", sa.String(), nullable=True),
+        sa.Column("foto_url", sa.String(length=500), nullable=True),
+        sa.Column("visible", sa.Boolean(), nullable=False),
+        sa.Column("orden", sa.Integer(), nullable=False),
+        sa.Column("destacado", sa.Boolean(), nullable=False),
+        sa.Column("activo", sa.Boolean(), nullable=False),
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.ForeignKeyConstraint(["categoria_id"], ["categoria.id"]),
+        sa.ForeignKeyConstraint(["producto_id"], ["producto.id"]),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("producto_id", "categoria_id", name="uq_producto_categoria"),
+    )
+    op.create_index("ix_producto_categoria_categoria_id", "producto_categoria", ["categoria_id"])
+    op.create_index("ix_producto_categoria_producto_id", "producto_categoria", ["producto_id"])
 
     op.create_table(
         "promocion",
@@ -142,19 +172,6 @@ def upgrade() -> None:
     op.create_index("ix_promocion_codigo", "promocion", ["codigo"], unique=True)
 
     op.create_table(
-        "regla_mayorista",
-        sa.Column("codigo", sa.String(length=80), nullable=False),
-        sa.Column("categoria_id", sa.Integer(), nullable=False),
-        sa.Column("nombre", sa.String(length=160), nullable=False),
-        sa.Column("cantidad_minima_total", sa.Integer(), nullable=False),
-        sa.Column("activa", sa.Boolean(), nullable=False),
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.ForeignKeyConstraint(["categoria_id"], ["categoria.id"]),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index("ix_regla_mayorista_codigo", "regla_mayorista", ["codigo"], unique=True)
-
-    op.create_table(
         "combo_regla",
         sa.Column("producto_a_id", sa.Integer(), nullable=False),
         sa.Column("producto_b_id", sa.Integer(), nullable=False),
@@ -165,6 +182,11 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["producto_a_id"], ["producto.id"]),
         sa.ForeignKeyConstraint(["producto_b_id"], ["producto.id"]),
         sa.PrimaryKeyConstraint("id"),
+    )
+    op.execute(
+        "CREATE UNIQUE INDEX uq_combo_regla_par "
+        "ON combo_regla (LEAST(producto_a_id, producto_b_id), "
+        "GREATEST(producto_a_id, producto_b_id))"
     )
 
     op.create_table(
@@ -189,18 +211,6 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("ix_pedido_codigo", "pedido", ["codigo"], unique=True)
-
-    op.create_table(
-        "precio_mayorista_producto",
-        sa.Column("regla_mayorista_id", sa.Integer(), nullable=False),
-        sa.Column("producto_id", sa.Integer(), nullable=False),
-        sa.Column("precio_unitario_mayorista", sa.Numeric(12, 2), nullable=False),
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.ForeignKeyConstraint(["producto_id"], ["producto.id"]),
-        sa.ForeignKeyConstraint(["regla_mayorista_id"], ["regla_mayorista.id"]),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("regla_mayorista_id", "producto_id"),
-    )
 
     op.create_table(
         "promocion_producto",
@@ -239,36 +249,45 @@ def upgrade() -> None:
         sa.Column("pedido_id", sa.Integer(), nullable=False),
         sa.Column("producto_id", sa.Integer(), nullable=False),
         sa.Column("producto_combo_id", sa.Integer(), nullable=True),
+        sa.Column("categoria_venta_id", sa.Integer(), nullable=False),
         sa.Column("cantidad", sa.Integer(), nullable=False),
         sa.Column("precio_unitario", sa.Numeric(12, 2), nullable=False),
+        sa.Column("subtotal", sa.Numeric(12, 2), nullable=False),
         sa.Column("id", sa.Integer(), nullable=False),
+        sa.ForeignKeyConstraint(["categoria_venta_id"], ["categoria.id"]),
         sa.ForeignKeyConstraint(["pedido_id"], ["pedido.id"]),
         sa.ForeignKeyConstraint(["producto_combo_id"], ["producto.id"]),
         sa.ForeignKeyConstraint(["producto_id"], ["producto.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
+    op.create_index("ix_pedido_item_pedido_id", "pedido_item", ["pedido_id"])
 
 
 def downgrade() -> None:
+    op.drop_index("ix_pedido_item_pedido_id", table_name="pedido_item")
     op.drop_table("pedido_item")
     op.drop_index("ix_gasto_codigo", table_name="gasto")
     op.drop_table("gasto")
     op.drop_table("promocion_producto")
-    op.drop_table("precio_mayorista_producto")
     op.drop_index("ix_pedido_codigo", table_name="pedido")
     op.drop_table("pedido")
+    op.execute("DROP INDEX IF EXISTS uq_combo_regla_par")
     op.drop_table("combo_regla")
-    op.drop_index("ix_regla_mayorista_codigo", table_name="regla_mayorista")
-    op.drop_table("regla_mayorista")
     op.drop_index("ix_promocion_codigo", table_name="promocion")
     op.drop_table("promocion")
+    op.drop_index("ix_producto_categoria_producto_id", table_name="producto_categoria")
+    op.drop_index("ix_producto_categoria_categoria_id", table_name="producto_categoria")
+    op.drop_table("producto_categoria")
+    op.drop_index("ix_producto_nombre", table_name="producto")
     op.drop_index("ix_producto_codigo", table_name="producto")
     op.drop_table("producto")
     op.drop_table("zona_envio")
     op.drop_index("ix_usuario_username", table_name="usuario")
     op.drop_table("usuario")
+    op.execute("DROP INDEX IF EXISTS uq_motivo_gasto_nombre_lower")
     op.drop_index("ix_motivo_gasto_nombre", table_name="motivo_gasto")
     op.drop_table("motivo_gasto")
+    op.execute("DROP INDEX IF EXISTS uq_marca_nombre_lower")
     op.drop_index("ix_marca_nombre", table_name="marca")
     op.drop_table("marca")
     op.drop_index("ix_cliente_telefono", table_name="cliente")

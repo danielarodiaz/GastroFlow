@@ -22,6 +22,7 @@ class FormaPago(str, Enum):
 class UnidadVenta(str, Enum):
     PIEZA = "pieza"
     UNIDAD = "unidad"
+    DOCENA = "docena"
 
 
 class ReglaPrecioCombo(str, Enum):

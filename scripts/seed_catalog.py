@@ -8,16 +8,7 @@ from sqlmodel import Session, select
 
 from gastroflow.data.database import engine
 from gastroflow.domain.enums import ReglaPrecioCombo, TipoPromocion, UnidadVenta
-from gastroflow.models import (
-    Categoria,
-    ComboRegla,
-    PrecioMayoristaProducto,
-    Producto,
-    Promocion,
-    PromocionProducto,
-    ReglaMayorista,
-    ZonaEnvio,
-)
+from gastroflow.models import Categoria, ComboRegla, Producto, ProductoCategoria, Promocion, PromocionProducto, ZonaEnvio
 
 SEED_PATH = Path(__file__).resolve().parents[1] / "gastroflow" / "seed" / "catalog_seed.json"
 
@@ -47,7 +38,18 @@ def main() -> None:
                 session,
                 Categoria,
                 {"codigo": row["codigo"]},
-                {"nombre": row["nombre"]},
+                {
+                    "nombre": row["nombre"],
+                    "descripcion_publica": row.get("descripcion_publica"),
+                    "foto_url": row.get("foto_url"),
+                    "orden": row.get("orden", 0),
+                    "visible_cliente": row.get("visible_cliente", True),
+                    "es_automatica": row.get("es_automatica", False),
+                    "cantidad_minima_total": row.get("cantidad_minima_total"),
+                    "prioridad": row.get("prioridad", 0),
+                    "acumulable": row.get("acumulable", False),
+                    "activa": row.get("activa", True),
+                },
             )
 
         for row in data["products"]:
@@ -56,14 +58,31 @@ def main() -> None:
                 Producto,
                 {"codigo": row["codigo"]},
                 {
-                    "categoria_id": categories[row["categoria_codigo"]].id,
                     "nombre": row["nombre"],
                     "descripcion": row["descripcion"],
                     "fotos": row["fotos"],
-                    "precio": Decimal(row["precio"]),
                     "unidad_venta": UnidadVenta[row["unidad_venta"]],
+                    "activo": row.get("activo", True),
                 },
             )
+            for price_row in row["category_prices"]:
+                first_or_create(
+                    session,
+                    ProductoCategoria,
+                    {
+                        "producto_id": products[row["codigo"]].id,
+                        "categoria_id": categories[price_row["categoria_codigo"]].id,
+                    },
+                    {
+                        "precio": Decimal(price_row["precio"]),
+                        "descripcion_publica": price_row.get("descripcion_publica"),
+                        "foto_url": price_row.get("foto_url"),
+                        "visible": price_row.get("visible", True),
+                        "orden": price_row.get("orden", 0),
+                        "destacado": price_row.get("destacado", False),
+                        "activo": price_row.get("activo", True),
+                    },
+                )
 
         for row in data["promotions"]:
             promotion = first_or_create(
@@ -87,29 +106,6 @@ def main() -> None:
                         "producto_id": products[product_code].id,
                     },
                     {},
-                )
-
-        for row in data["wholesale_rules"]:
-            rule = first_or_create(
-                session,
-                ReglaMayorista,
-                {"codigo": row["codigo"]},
-                {
-                    "categoria_id": categories[row["categoria_codigo"]].id,
-                    "nombre": row["nombre"],
-                    "cantidad_minima_total": row["cantidad_minima_total"],
-                    "activa": row["activa"],
-                },
-            )
-            for price_row in row["product_prices"]:
-                first_or_create(
-                    session,
-                    PrecioMayoristaProducto,
-                    {
-                        "regla_mayorista_id": rule.id,
-                        "producto_id": products[price_row["producto_codigo"]].id,
-                    },
-                    {"precio_unitario_mayorista": Decimal(price_row["precio_unitario_mayorista"])},
                 )
 
         for row in data["delivery_zones"]:

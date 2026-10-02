@@ -10,11 +10,10 @@ from gastroflow.domain.enums import FormaPago, ReglaPrecioCombo, TipoPromocion, 
 from gastroflow.models import (
     Categoria,
     ComboRegla,
-    PrecioMayoristaProducto,
     Producto,
+    ProductoCategoria,
     Promocion,
     PromocionProducto,
-    ReglaMayorista,
     ZonaEnvio,
 )
 from gastroflow.services import OrderItemInput, OrderService, PublicOrderInput
@@ -39,17 +38,27 @@ def main() -> None:
         categoria = first_or_create(
             session,
             Categoria,
-            {"codigo": "SMOKE_LISTA_HORNO"},
+            {"codigo": "LISTA_HORNO"},
             {"nombre": "Smoke lista para hornear"},
+        )
+        mayorista = first_or_create(
+            session,
+            Categoria,
+            {"codigo": "MAYORISTA"},
+            {
+                "nombre": "Smoke mayorista",
+                "visible_cliente": False,
+                "es_automatica": True,
+                "cantidad_minima_total": 10,
+                "prioridad": 100,
+            },
         )
         muzza = first_or_create(
             session,
             Producto,
             {"codigo": "SMOKE_MUZZA"},
             {
-                "categoria_id": categoria.id,
                 "nombre": "Smoke Muzzarella",
-                "precio": Decimal("5500.00"),
                 "unidad_venta": UnidadVenta.PIEZA,
             },
         )
@@ -58,12 +67,26 @@ def main() -> None:
             Producto,
             {"codigo": "SMOKE_ESPECIAL"},
             {
-                "categoria_id": categoria.id,
                 "nombre": "Smoke Especial",
-                "precio": Decimal("7000.00"),
                 "unidad_venta": UnidadVenta.PIEZA,
             },
         )
+        for product, standard_price, wholesale_price in (
+            (muzza, Decimal("5500.00"), Decimal("4500.00")),
+            (especial, Decimal("7000.00"), Decimal("6000.00")),
+        ):
+            first_or_create(
+                session,
+                ProductoCategoria,
+                {"producto_id": product.id, "categoria_id": categoria.id},
+                {"precio": standard_price},
+            )
+            first_or_create(
+                session,
+                ProductoCategoria,
+                {"producto_id": product.id, "categoria_id": mayorista.id},
+                {"precio": wholesale_price},
+            )
         promo = first_or_create(
             session,
             Promocion,
@@ -81,29 +104,6 @@ def main() -> None:
             PromocionProducto,
             {"promocion_id": promo.id, "producto_id": muzza.id},
             {},
-        )
-        regla = first_or_create(
-            session,
-            ReglaMayorista,
-            {"codigo": "SMOKE_MAYORISTA_10"},
-            {
-                "categoria_id": categoria.id,
-                "nombre": "Smoke mayorista desde 10",
-                "cantidad_minima_total": 10,
-                "activa": True,
-            },
-        )
-        first_or_create(
-            session,
-            PrecioMayoristaProducto,
-            {"regla_mayorista_id": regla.id, "producto_id": muzza.id},
-            {"precio_unitario_mayorista": Decimal("4500.00")},
-        )
-        first_or_create(
-            session,
-            PrecioMayoristaProducto,
-            {"regla_mayorista_id": regla.id, "producto_id": especial.id},
-            {"precio_unitario_mayorista": Decimal("6000.00")},
         )
         first_or_create(
             session,

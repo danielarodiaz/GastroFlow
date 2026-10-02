@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Boolean, Column, Enum as SAEnum, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, Column, Enum as SAEnum, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -13,6 +13,15 @@ from gastroflow.models.base import IdMixin, money_column
 class CategoriaBase(SQLModel):
     codigo: str = Field(index=True, unique=True, max_length=50)
     nombre: str = Field(max_length=120)
+    descripcion_publica: Optional[str] = Field(default=None)
+    foto_url: Optional[str] = Field(default=None, max_length=500)
+    orden: int = Field(default=0)
+    visible_cliente: bool = Field(default=True, sa_column=Column(Boolean, nullable=False))
+    es_automatica: bool = Field(default=False, sa_column=Column(Boolean, nullable=False))
+    cantidad_minima_total: Optional[int] = Field(default=None)
+    prioridad: int = Field(default=0)
+    acumulable: bool = Field(default=False, sa_column=Column(Boolean, nullable=False))
+    activa: bool = Field(default=True, sa_column=Column(Boolean, nullable=False))
 
 
 class Categoria(CategoriaBase, IdMixin, table=True):
@@ -29,14 +38,13 @@ class CategoriaRead(CategoriaBase):
 
 class ProductoBase(SQLModel):
     codigo: str = Field(index=True, unique=True, max_length=50)
-    categoria_id: int = Field(foreign_key="categoria.id")
-    nombre: str = Field(max_length=140)
+    nombre: str = Field(index=True, max_length=140)
     descripcion: Optional[str] = Field(default=None)
     fotos: Optional[list[str]] = Field(default=None, sa_column=Column(JSONB, nullable=True))
-    precio: Decimal = Field(sa_column=money_column())
     unidad_venta: UnidadVenta = Field(
         sa_column=Column(SAEnum(UnidadVenta, name="unidad_venta"), nullable=False)
     )
+    activo: bool = Field(default=True, sa_column=Column(Boolean, nullable=False))
 
 
 class Producto(ProductoBase, IdMixin, table=True):
@@ -48,6 +56,33 @@ class ProductoCreate(ProductoBase):
 
 
 class ProductoRead(ProductoBase):
+    id: int
+
+
+class ProductoCategoriaBase(SQLModel):
+    producto_id: int = Field(foreign_key="producto.id", index=True)
+    categoria_id: int = Field(foreign_key="categoria.id", index=True)
+    precio: Decimal = Field(sa_column=money_column())
+    descripcion_publica: Optional[str] = Field(default=None)
+    foto_url: Optional[str] = Field(default=None, max_length=500)
+    visible: bool = Field(default=True, sa_column=Column(Boolean, nullable=False))
+    orden: int = Field(default=0)
+    destacado: bool = Field(default=False, sa_column=Column(Boolean, nullable=False))
+    activo: bool = Field(default=True, sa_column=Column(Boolean, nullable=False))
+
+
+class ProductoCategoria(ProductoCategoriaBase, IdMixin, table=True):
+    __tablename__ = "producto_categoria"
+    __table_args__ = (
+        UniqueConstraint("producto_id", "categoria_id", name="uq_producto_categoria"),
+    )
+
+
+class ProductoCategoriaCreate(ProductoCategoriaBase):
+    pass
+
+
+class ProductoCategoriaRead(ProductoCategoriaBase):
     id: int
 
 
@@ -91,45 +126,6 @@ class PromocionProductoCreate(PromocionProductoBase):
 
 
 class PromocionProductoRead(PromocionProductoBase):
-    id: int
-
-
-class ReglaMayoristaBase(SQLModel):
-    codigo: str = Field(index=True, unique=True, max_length=80)
-    categoria_id: int = Field(foreign_key="categoria.id")
-    nombre: str = Field(max_length=160)
-    cantidad_minima_total: int = Field(gt=0)
-    activa: bool = Field(default=True, sa_column=Column(Boolean, nullable=False))
-
-
-class ReglaMayorista(ReglaMayoristaBase, IdMixin, table=True):
-    __tablename__ = "regla_mayorista"
-
-
-class ReglaMayoristaCreate(ReglaMayoristaBase):
-    pass
-
-
-class ReglaMayoristaRead(ReglaMayoristaBase):
-    id: int
-
-
-class PrecioMayoristaProductoBase(SQLModel):
-    regla_mayorista_id: int = Field(foreign_key="regla_mayorista.id")
-    producto_id: int = Field(foreign_key="producto.id")
-    precio_unitario_mayorista: Decimal = Field(sa_column=money_column())
-
-
-class PrecioMayoristaProducto(PrecioMayoristaProductoBase, IdMixin, table=True):
-    __tablename__ = "precio_mayorista_producto"
-    __table_args__ = (UniqueConstraint("regla_mayorista_id", "producto_id"),)
-
-
-class PrecioMayoristaProductoCreate(PrecioMayoristaProductoBase):
-    pass
-
-
-class PrecioMayoristaProductoRead(PrecioMayoristaProductoBase):
     id: int
 
 

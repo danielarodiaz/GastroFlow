@@ -9,10 +9,9 @@ def test_crud_registry_contains_all_model_tables() -> None:
     assert set(CRUD_TABLES) == {
         "categoria",
         "producto",
+        "producto_categoria",
         "promocion",
         "promocion_producto",
-        "regla_mayorista",
-        "precio_mayorista_producto",
         "combo_regla",
         "zona_envio",
         "motivo_gasto",

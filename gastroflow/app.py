@@ -5,6 +5,7 @@ import reflex as rx
 from gastroflow.states.app_state import (
     AdminCrudState,
     AuthState,
+    CatalogAdminState,
     ExpenseState,
     OperationsState,
     PublicOrderState,
@@ -193,6 +194,11 @@ def hero() -> rx.Component:
 def category_card(category: rx.Var[dict]) -> rx.Component:
     return rx.box(
         rx.vstack(
+            rx.cond(
+                category["foto"] != "",
+                rx.image(src=category["foto"], width="100%", height="112px", object_fit="cover", border_radius="14px"),
+                food_visual(category["nombre"], "112px"),
+            ),
             rx.hstack(
                 rx.box(width="0.75rem", height="2.4rem", border_radius="999px", background=RED),
                 rx.spacer(),
@@ -201,6 +207,7 @@ def category_card(category: rx.Var[dict]) -> rx.Component:
                 align="center",
             ),
             rx.text(category["nombre"], font_family=FONT_STACK, font_size="1.4rem", color=GREEN, font_weight="900"),
+            rx.cond(category["descripcion"] != "", rx.text(category["descripcion"], color="#725f45", font_size="0.92rem"), rx.fragment()),
             rx.text(category["total"], " productos", color="#725f45", font_weight="700"),
             pill_button("Ver catalogo", on_click=PublicOrderState.show_category(category["id"]), width="100%"),
             spacing="4",
@@ -603,6 +610,7 @@ def internal_nav() -> rx.Component:
             rx.spacer(),
             rx.link("Pedidos", href="/pedidos", style=link_style),
             rx.link("Gastos", href="/gastos", style=link_style),
+            rx.link("Catalogo", href="/catalogo-admin", style=link_style),
             rx.link("Admin", href="/admin", style=link_style),
             outline_button("Salir", on_click=AuthState.logout),
             width="100%",
@@ -687,6 +695,70 @@ def order_card(order: rx.Var[dict]) -> rx.Component:
     )
 
 
+def kpi_card(label: str, value: rx.Var[str] | str) -> rx.Component:
+    return rx.box(
+        rx.vstack(
+            rx.text(label, color="#725f45", font_weight="800", font_size="0.82rem"),
+            rx.text(value, color=GREEN, font_weight="900", font_size="1.45rem"),
+            spacing="1",
+            align="start",
+        ),
+        background="#fffdf5",
+        border="1px solid rgba(23, 46, 29, 0.12)",
+        border_radius="14px",
+        padding="0.9rem",
+    )
+
+
+def table_cell(content: rx.Component | str | rx.Var[str], weight: str = "700") -> rx.Component:
+    return rx.box(
+        rx.text(content, font_weight=weight, color=INK, font_size="0.86rem"),
+        padding="0.65rem",
+        min_width="130px",
+    )
+
+
+def order_table_row(order: rx.Var[dict]) -> rx.Component:
+    return rx.grid(
+        table_cell(order["codigo"], "900"),
+        table_cell(order["fecha"]),
+        table_cell(order["cliente"]),
+        table_cell(order["estado"]),
+        table_cell(order["forma_pago"]),
+        table_cell(order["categorias"]),
+        table_cell(order["items"]),
+        table_cell(order["total_display"], "900"),
+        columns="130px 130px 180px 150px 140px 220px 90px 120px",
+        width="max-content",
+        min_width="100%",
+        border_bottom="1px solid rgba(23, 46, 29, 0.10)",
+        align_items="center",
+    )
+
+
+def order_filters() -> rx.Component:
+    return panel(
+        rx.grid(
+            field("Mes", rx.input(value=OperationsState.filter_month, on_change=OperationsState.set_filter_month, placeholder="AAAA-MM", style=input_style())),
+            field("Desde", rx.input(value=OperationsState.filter_date_from, on_change=OperationsState.set_filter_date_from, placeholder="AAAA-MM-DD", style=input_style())),
+            field("Hasta", rx.input(value=OperationsState.filter_date_to, on_change=OperationsState.set_filter_date_to, placeholder="AAAA-MM-DD", style=input_style())),
+            field("Categoria", rx.input(value=OperationsState.filter_category, on_change=OperationsState.set_filter_category, style=input_style())),
+            field("Cliente", rx.input(value=OperationsState.filter_client, on_change=OperationsState.set_filter_client, style=input_style())),
+            field("Pago", rx.input(value=OperationsState.filter_payment, on_change=OperationsState.set_filter_payment, placeholder="efectivo / transferencia", style=input_style())),
+            field("Estado", rx.input(value=OperationsState.filter_state, on_change=OperationsState.set_filter_state, placeholder="pedido, en_proceso...", style=input_style())),
+            columns="repeat(auto-fit, minmax(min(100%, 150px), 1fr))",
+            spacing="3",
+            width="100%",
+        ),
+        rx.hstack(
+            pill_button("Aplicar filtros", on_click=OperationsState.load_orders),
+            outline_button("Limpiar", on_click=OperationsState.clear_order_filters),
+            pill_button("Descargar XLSX", on_click=OperationsState.export_orders_xlsx, background=GOLD, color=GREEN),
+            wrap="wrap",
+        ),
+    )
+
+
 def orders_page() -> rx.Component:
     return internal_shell(
         rx.hstack(
@@ -696,11 +768,50 @@ def orders_page() -> rx.Component:
             width="100%",
         ),
         rx.text(OperationsState.message, color=RED, font_weight="900"),
+        rx.heading("Comanda activa", size="5", font_family=FONT_STACK, color=GREEN),
         rx.grid(
             rx.foreach(OperationsState.orders, order_card),
             columns="repeat(auto-fit, minmax(260px, 1fr))",
             spacing="4",
             width="100%",
+        ),
+        rx.heading("Todos los pedidos", size="5", font_family=FONT_STACK, color=GREEN),
+        order_filters(),
+        rx.grid(
+            kpi_card("Pedidos", OperationsState.order_kpis["total_pedidos"]),
+            kpi_card("Items", OperationsState.order_kpis["items"]),
+            kpi_card("Ticket promedio", OperationsState.order_kpis["ticket_promedio"]),
+            kpi_card("Facturacion", OperationsState.order_kpis["facturacion"]),
+            columns="repeat(auto-fit, minmax(min(100%, 170px), 1fr))",
+            spacing="3",
+            width="100%",
+        ),
+        rx.box(
+            rx.vstack(
+                rx.grid(
+                    table_cell("Codigo", "900"),
+                    table_cell("Fecha", "900"),
+                    table_cell("Cliente", "900"),
+                    table_cell("Estado", "900"),
+                    table_cell("Pago", "900"),
+                    table_cell("Categorias", "900"),
+                    table_cell("Items", "900"),
+                    table_cell("Total", "900"),
+                    columns="130px 130px 180px 150px 140px 220px 90px 120px",
+                    width="max-content",
+                    min_width="100%",
+                    background="#fff4d9",
+                    border_radius="12px 12px 0 0",
+                ),
+                rx.foreach(OperationsState.order_rows, order_table_row),
+                spacing="0",
+                align="stretch",
+                width="100%",
+            ),
+            overflow_x="auto",
+            background="#fffdf5",
+            border="1px solid rgba(23, 46, 29, 0.12)",
+            border_radius="14px",
         ),
     )
 
@@ -710,8 +821,9 @@ def expense_card(expense: rx.Var[dict]) -> rx.Component:
         rx.vstack(
             rx.text(expense["codigo"], font_weight="900", color=GREEN),
             rx.text(expense["fecha"], color="#725f45"),
+            rx.text(expense["motivo"], " · ", expense["marca"], color=RED, font_weight="900"),
             rx.text(expense["cantidad"], " ", expense["unidad"]),
-            rx.text("$", expense["precio"], font_weight="900"),
+            rx.text("$", expense["precio_display"], font_weight="900"),
             rx.text(expense["lugar"], color="#725f45"),
             spacing="2",
             align="stretch",
@@ -720,6 +832,46 @@ def expense_card(expense: rx.Var[dict]) -> rx.Component:
         border="1px solid rgba(23, 46, 29, 0.12)",
         border_radius="18px",
         padding="1rem",
+    )
+
+
+def expense_table_row(expense: rx.Var[dict]) -> rx.Component:
+    return rx.grid(
+        table_cell(expense["codigo"], "900"),
+        table_cell(expense["fecha"]),
+        table_cell(expense["motivo"]),
+        table_cell(expense["marca"]),
+        table_cell(expense["cantidad"]),
+        table_cell(expense["unidad"]),
+        table_cell(expense["precio_display"], "900"),
+        table_cell(expense["lugar"]),
+        columns="130px 130px 180px 180px 110px 100px 120px 220px",
+        width="max-content",
+        min_width="100%",
+        border_bottom="1px solid rgba(23, 46, 29, 0.10)",
+        align_items="center",
+    )
+
+
+def expense_filters() -> rx.Component:
+    return panel(
+        rx.grid(
+            field("Mes", rx.input(value=ExpenseState.filter_month, on_change=ExpenseState.set_filter_month, placeholder="AAAA-MM", style=input_style())),
+            field("Desde", rx.input(value=ExpenseState.filter_date_from, on_change=ExpenseState.set_filter_date_from, placeholder="AAAA-MM-DD", style=input_style())),
+            field("Hasta", rx.input(value=ExpenseState.filter_date_to, on_change=ExpenseState.set_filter_date_to, placeholder="AAAA-MM-DD", style=input_style())),
+            field("Motivo", rx.input(value=ExpenseState.filter_motivo, on_change=ExpenseState.set_filter_motivo, style=input_style())),
+            field("Marca", rx.input(value=ExpenseState.filter_marca, on_change=ExpenseState.set_filter_marca, style=input_style())),
+            field("Lugar", rx.input(value=ExpenseState.filter_lugar, on_change=ExpenseState.set_filter_lugar, style=input_style())),
+            columns="repeat(auto-fit, minmax(min(100%, 150px), 1fr))",
+            spacing="3",
+            width="100%",
+        ),
+        rx.hstack(
+            pill_button("Aplicar filtros", on_click=ExpenseState.load_expenses),
+            outline_button("Limpiar", on_click=ExpenseState.clear_expense_filters),
+            pill_button("Descargar XLSX", on_click=ExpenseState.export_expenses_xlsx, background=GOLD, color=GREEN),
+            wrap="wrap",
+        ),
     )
 
 
@@ -746,6 +898,43 @@ def expenses_page() -> rx.Component:
             spacing="5",
             width="100%",
         ),
+        rx.heading("Analisis de gastos", size="5", font_family=FONT_STACK, color=GREEN),
+        expense_filters(),
+        rx.grid(
+            kpi_card("Gastos", ExpenseState.expense_kpis["total_gastos"]),
+            kpi_card("Monto total", ExpenseState.expense_kpis["monto_total"]),
+            kpi_card("Ticket promedio", ExpenseState.expense_kpis["ticket_promedio"]),
+            columns="repeat(auto-fit, minmax(min(100%, 170px), 1fr))",
+            spacing="3",
+            width="100%",
+        ),
+        rx.box(
+            rx.vstack(
+                rx.grid(
+                    table_cell("Codigo", "900"),
+                    table_cell("Fecha", "900"),
+                    table_cell("Motivo", "900"),
+                    table_cell("Marca", "900"),
+                    table_cell("Cantidad", "900"),
+                    table_cell("Unidad", "900"),
+                    table_cell("Precio", "900"),
+                    table_cell("Lugar", "900"),
+                    columns="130px 130px 180px 180px 110px 100px 120px 220px",
+                    width="max-content",
+                    min_width="100%",
+                    background="#fff4d9",
+                    border_radius="12px 12px 0 0",
+                ),
+                rx.foreach(ExpenseState.expense_rows, expense_table_row),
+                spacing="0",
+                align="stretch",
+                width="100%",
+            ),
+            overflow_x="auto",
+            background="#fffdf5",
+            border="1px solid rgba(23, 46, 29, 0.12)",
+            border_radius="14px",
+        ),
     )
 
 
@@ -763,6 +952,156 @@ def record_card(record: rx.Var[dict]) -> rx.Component:
         overflow_x="auto",
         font_family="monospace",
         font_size="0.85rem",
+    )
+
+
+def admin_category_card(category: rx.Var[dict]) -> rx.Component:
+    return rx.box(
+        rx.vstack(
+            rx.cond(
+                category["foto"] != "",
+                rx.image(src=category["foto"], width="100%", height="110px", object_fit="cover", border_radius="12px"),
+                food_visual(category["nombre"], "110px"),
+            ),
+            rx.hstack(
+                rx.text(category["nombre"], font_weight="900", color=GREEN),
+                rx.spacer(),
+                rx.text(category["codigo"], color=RED, font_weight="900", font_size="0.75rem"),
+                width="100%",
+            ),
+            rx.text(category["total"], " productos", color="#725f45", font_weight="700"),
+            outline_button("Editar", on_click=CatalogAdminState.select_category(category["id"]), width="100%"),
+            spacing="3",
+            align="stretch",
+        ),
+        background="#fffdf5",
+        border="1px solid rgba(23, 46, 29, 0.12)",
+        border_radius="14px",
+        padding="0.7rem",
+    )
+
+
+def admin_product_card(product: rx.Var[dict]) -> rx.Component:
+    return rx.box(
+        rx.vstack(
+            rx.cond(
+                product["foto"] != "",
+                rx.image(src=product["foto"], width="100%", height="120px", object_fit="cover", border_radius="12px"),
+                food_visual(product["nombre"], "120px"),
+            ),
+            rx.hstack(
+                rx.text(product["nombre"], font_weight="900", color=GREEN),
+                rx.spacer(),
+                rx.text("$", product["precio_display"], font_weight="900", color=RED),
+                width="100%",
+            ),
+            rx.text(product["descripcion"], color="#725f45", font_size="0.88rem"),
+            rx.hstack(
+                rx.text(rx.cond(product["visible"], "Visible", "Oculto"), font_weight="900", color=rx.cond(product["visible"], GREEN, RED)),
+                rx.spacer(),
+                rx.text(rx.cond(product["destacado"], "Destacado", ""), color=GOLD, font_weight="900"),
+                width="100%",
+            ),
+            outline_button("Editar", on_click=CatalogAdminState.select_product_category(product["id"]), width="100%"),
+            spacing="3",
+            align="stretch",
+        ),
+        background="#fffdf5",
+        border="1px solid rgba(23, 46, 29, 0.12)",
+        border_radius="14px",
+        padding="0.7rem",
+    )
+
+
+def upload_box(upload_id: str, label: str, on_click: rx.event.EventSpec) -> rx.Component:
+    return rx.vstack(
+        rx.upload(
+            rx.vstack(
+                rx.text(label, font_weight="900", color=GREEN),
+                rx.text("Elegir archivo desde la compu", color="#725f45", font_size="0.85rem"),
+                spacing="1",
+                align="center",
+            ),
+            id=upload_id,
+            border="1px dashed rgba(23, 46, 29, 0.35)",
+            border_radius="14px",
+            padding="1rem",
+            width="100%",
+        ),
+        pill_button("Subir imagen", on_click=on_click, background=GOLD, color=GREEN, width="100%"),
+        spacing="2",
+        align="stretch",
+    )
+
+
+def catalog_admin_page() -> rx.Component:
+    return internal_shell(
+        rx.hstack(
+            rx.heading("Catalogo visual", size="7", font_family=FONT_STACK, color=GREEN),
+            rx.spacer(),
+            pill_button("Actualizar", on_click=CatalogAdminState.load_catalog_admin),
+            width="100%",
+        ),
+        rx.text(CatalogAdminState.message, color=RED, font_weight="900"),
+        rx.grid(
+            panel(
+                rx.heading("Categorias", size="5", font_family=FONT_STACK, color=GREEN),
+                rx.grid(
+                    rx.foreach(CatalogAdminState.categories, admin_category_card),
+                    columns="repeat(auto-fit, minmax(min(100%, 190px), 1fr))",
+                    spacing="3",
+                    width="100%",
+                ),
+            ),
+            panel(
+                rx.heading("Editar categoria", size="5", font_family=FONT_STACK, color=GREEN),
+                field("Nombre", rx.input(value=CatalogAdminState.category_nombre, on_change=CatalogAdminState.set_category_nombre, style=input_style())),
+                field("Descripcion publica", rx.text_area(value=CatalogAdminState.category_descripcion, on_change=CatalogAdminState.set_category_descripcion, style=input_style())),
+                field("Orden", rx.input(value=CatalogAdminState.category_orden, on_change=CatalogAdminState.set_category_orden, type="number", style=input_style())),
+                rx.checkbox("Visible para cliente", checked=CatalogAdminState.category_visible, on_change=CatalogAdminState.set_category_visible),
+                rx.hstack(
+                    pill_button("Guardar categoria", on_click=CatalogAdminState.save_category, background=RED),
+                    outline_button("Ver productos", on_click=CatalogAdminState.load_catalog_admin),
+                    wrap="wrap",
+                ),
+                upload_box(
+                    "category_upload",
+                    "Foto de categoria",
+                    CatalogAdminState.upload_category_photo(rx.upload_files(upload_id="category_upload")),
+                ),
+            ),
+            columns="minmax(0, 1.3fr) minmax(280px, 0.7fr)",
+            spacing="5",
+            width="100%",
+        ),
+        rx.grid(
+            panel(
+                rx.heading("Productos de la categoria", size="5", font_family=FONT_STACK, color=GREEN),
+                rx.grid(
+                    rx.foreach(CatalogAdminState.products, admin_product_card),
+                    columns="repeat(auto-fit, minmax(min(100%, 210px), 1fr))",
+                    spacing="3",
+                    width="100%",
+                ),
+            ),
+            panel(
+                rx.heading("Editar producto en categoria", size="5", font_family=FONT_STACK, color=GREEN),
+                field("Precio", rx.input(value=CatalogAdminState.product_price, on_change=CatalogAdminState.set_product_price, style=input_style())),
+                field("Descripcion contextual", rx.text_area(value=CatalogAdminState.product_description, on_change=CatalogAdminState.set_product_description, style=input_style())),
+                field("Orden", rx.input(value=CatalogAdminState.product_order, on_change=CatalogAdminState.set_product_order, type="number", style=input_style())),
+                rx.checkbox("Visible", checked=CatalogAdminState.product_visible, on_change=CatalogAdminState.set_product_visible),
+                rx.checkbox("Destacado", checked=CatalogAdminState.product_featured, on_change=CatalogAdminState.set_product_featured),
+                pill_button("Guardar producto", on_click=CatalogAdminState.save_product_category, background=RED),
+                upload_box(
+                    "product_upload",
+                    "Foto del producto en esta categoria",
+                    CatalogAdminState.upload_product_photo(rx.upload_files(upload_id="product_upload")),
+                ),
+            ),
+            columns="minmax(0, 1.3fr) minmax(280px, 0.7fr)",
+            spacing="5",
+            width="100%",
+        ),
     )
 
 
@@ -801,4 +1140,5 @@ app.add_page(public_page, route="/", on_load=PublicOrderState.load_catalog)
 app.add_page(login_page, route="/login")
 app.add_page(orders_page, route="/pedidos", on_load=OperationsState.load_orders)
 app.add_page(expenses_page, route="/gastos", on_load=ExpenseState.load_expenses)
+app.add_page(catalog_admin_page, route="/catalogo-admin", on_load=CatalogAdminState.load_catalog_admin)
 app.add_page(admin_page, route="/admin")

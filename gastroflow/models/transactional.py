@@ -91,11 +91,13 @@ class PedidoRead(PedidoBase):
 
 
 class PedidoItemBase(SQLModel):
-    pedido_id: int = Field(foreign_key="pedido.id")
+    pedido_id: int = Field(foreign_key="pedido.id", index=True)
     producto_id: int = Field(foreign_key="producto.id")
     producto_combo_id: Optional[int] = Field(default=None, foreign_key="producto.id")
+    categoria_venta_id: int = Field(foreign_key="categoria.id")
     cantidad: int = Field(gt=0)
     precio_unitario: Decimal = Field(sa_column=money_column())
+    subtotal: Decimal = Field(sa_column=money_column())
 
 
 class PedidoItem(PedidoItemBase, IdMixin, table=True):

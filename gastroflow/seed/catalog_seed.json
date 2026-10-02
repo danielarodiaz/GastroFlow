@@ -2,27 +2,94 @@
   "categories": [
     {
       "codigo": "LISTA_HORNO",
-      "nombre": "Lista para hornear"
+      "nombre": "Lista para hornear",
+      "descripcion_publica": "Pizzas listas para terminar en casa.",
+      "foto_url": null,
+      "orden": 1,
+      "visible_cliente": true,
+      "es_automatica": false,
+      "cantidad_minima_total": null,
+      "prioridad": 0,
+      "acumulable": false,
+      "activa": true
     },
     {
       "codigo": "LISTA_COMER",
-      "nombre": "Lista para comer"
+      "nombre": "Lista para comer",
+      "descripcion_publica": "Pizzas listas para servir.",
+      "foto_url": null,
+      "orden": 2,
+      "visible_cliente": true,
+      "es_automatica": false,
+      "cantidad_minima_total": null,
+      "prioridad": 0,
+      "acumulable": false,
+      "activa": true
+    },
+    {
+      "codigo": "EVENTOS",
+      "nombre": "Eventos",
+      "descripcion_publica": "Pedidos grandes para reuniones y eventos.",
+      "foto_url": null,
+      "orden": 3,
+      "visible_cliente": true,
+      "es_automatica": false,
+      "cantidad_minima_total": 10,
+      "prioridad": 50,
+      "acumulable": false,
+      "activa": true
     },
     {
       "codigo": "PRE_PIZZAS",
-      "nombre": "Pre pizzas"
+      "nombre": "Pre pizzas",
+      "descripcion_publica": null,
+      "foto_url": null,
+      "orden": 4,
+      "visible_cliente": true,
+      "es_automatica": false,
+      "cantidad_minima_total": null,
+      "prioridad": 0,
+      "acumulable": false,
+      "activa": true
     },
     {
       "codigo": "MAYORISTA",
-      "nombre": "Mayorista"
+      "nombre": "Mayorista",
+      "descripcion_publica": null,
+      "foto_url": null,
+      "orden": 99,
+      "visible_cliente": false,
+      "es_automatica": true,
+      "cantidad_minima_total": 10,
+      "prioridad": 100,
+      "acumulable": false,
+      "activa": true
     },
     {
       "codigo": "PAN_ARABE",
-      "nombre": "Pan árabe"
+      "nombre": "Pan árabe",
+      "descripcion_publica": null,
+      "foto_url": null,
+      "orden": 5,
+      "visible_cliente": true,
+      "es_automatica": false,
+      "cantidad_minima_total": null,
+      "prioridad": 0,
+      "acumulable": false,
+      "activa": true
     },
     {
       "codigo": "PIZZETAS",
-      "nombre": "Pizzetas"
+      "nombre": "Pizzetas",
+      "descripcion_publica": null,
+      "foto_url": null,
+      "orden": 6,
+      "visible_cliente": true,
+      "es_automatica": false,
+      "cantidad_minima_total": null,
+      "prioridad": 0,
+      "acumulable": false,
+      "activa": true
     }
   ],
   "products": [
@@ -32,8 +99,13 @@
       "nombre": "Muzzarella",
       "descripcion": null,
       "fotos": null,
-      "precio": "5500.00",
-      "unidad_venta": "PIEZA"
+      "unidad_venta": "PIEZA",
+      "activo": true,
+      "category_prices": [
+        {"categoria_codigo": "LISTA_HORNO", "precio": "5500.00", "activo": true, "visible": true, "orden": 1, "destacado": true, "descripcion_publica": null, "foto_url": null},
+        {"categoria_codigo": "EVENTOS", "precio": "5200.00", "activo": true, "visible": true, "orden": 1, "destacado": true, "descripcion_publica": null, "foto_url": null},
+        {"categoria_codigo": "MAYORISTA", "precio": "4500.00", "activo": true, "visible": false, "orden": 1, "destacado": false, "descripcion_publica": null, "foto_url": null}
+      ]
     },
     {
       "categoria_codigo": "LISTA_HORNO",
@@ -41,8 +113,13 @@
       "nombre": "Especial",
       "descripcion": null,
       "fotos": null,
-      "precio": "7000.00",
-      "unidad_venta": "PIEZA"
+      "unidad_venta": "PIEZA",
+      "activo": true,
+      "category_prices": [
+        {"categoria_codigo": "LISTA_HORNO", "precio": "7000.00", "activo": true, "visible": true, "orden": 2, "destacado": false, "descripcion_publica": null, "foto_url": null},
+        {"categoria_codigo": "EVENTOS", "precio": "6600.00", "activo": true, "visible": true, "orden": 2, "destacado": false, "descripcion_publica": null, "foto_url": null},
+        {"categoria_codigo": "MAYORISTA", "precio": "6000.00", "activo": true, "visible": false, "orden": 2, "destacado": false, "descripcion_publica": null, "foto_url": null}
+      ]
     },
     {
       "categoria_codigo": "LISTA_HORNO",
@@ -50,8 +127,13 @@
       "nombre": "Calabresa",
       "descripcion": null,
       "fotos": null,
-      "precio": "7000.00",
-      "unidad_venta": "PIEZA"
+      "unidad_venta": "PIEZA",
+      "activo": true,
+      "category_prices": [
+        {"categoria_codigo": "LISTA_HORNO", "precio": "7000.00", "activo": true, "visible": true, "orden": 3, "destacado": false, "descripcion_publica": null, "foto_url": null},
+        {"categoria_codigo": "EVENTOS", "precio": "6600.00", "activo": true, "visible": true, "orden": 3, "destacado": false, "descripcion_publica": null, "foto_url": null},
+        {"categoria_codigo": "MAYORISTA", "precio": "6000.00", "activo": true, "visible": false, "orden": 3, "destacado": false, "descripcion_publica": null, "foto_url": null}
+      ]
     }
   ],
   "promotions": [
@@ -76,29 +158,6 @@
       "productos_elegibles": [
         "ESPECIAL_HORNO",
         "CALABRESA_HORNO"
-      ]
-    }
-  ],
-  "wholesale_rules": [
-    {
-      "codigo": "MAYORISTA_LISTA_HORNO_10",
-      "categoria_codigo": "LISTA_HORNO",
-      "nombre": "Mayorista lista para hornear desde 10 unidades",
-      "cantidad_minima_total": 10,
-      "activa": true,
-      "product_prices": [
-        {
-          "producto_codigo": "MUZZA_HORNO",
-          "precio_unitario_mayorista": "4500.00"
-        },
-        {
-          "producto_codigo": "ESPECIAL_HORNO",
-          "precio_unitario_mayorista": "6000.00"
-        },
-        {
-          "producto_codigo": "CALABRESA_HORNO",
-          "precio_unitario_mayorista": "6000.00"
-        }
       ]
     }
   ],

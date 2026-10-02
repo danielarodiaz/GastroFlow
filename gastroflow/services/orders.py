@@ -17,11 +17,10 @@ from gastroflow.models import (
     Pedido,
     PedidoItem,
     PedidoRead,
-    PrecioMayoristaProducto,
     Producto,
+    ProductoCategoria,
     Promocion,
     PromocionProducto,
-    ReglaMayorista,
     UsuarioRead,
     ZonaEnvio,
 )
@@ -29,6 +28,10 @@ from gastroflow.services.auth import AuthService
 from gastroflow.services.codes import next_business_code
 
 MONEY_QUANT = Decimal("0.01")
+DEFAULT_CONTEXT_CODE = "LISTA_HORNO"
+EVENTS_CONTEXT_CODE = "EVENTOS"
+WHOLESALE_CONTEXT_CODE = "MAYORISTA"
+WHOLESALE_ELIGIBLE_CONTEXTS = frozenset({DEFAULT_CONTEXT_CODE})
 
 
 @dataclass(frozen=True)
@@ -50,6 +53,7 @@ class PublicOrderInput:
     direccion_lat: Decimal | None = None
     direccion_lng: Decimal | None = None
     observaciones: str | None = None
+    contexto_origen: str = DEFAULT_CONTEXT_CODE
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,8 @@ class CreatedOrderResult:
 class PricedItem:
     item: OrderItemInput
     precio_unitario: Decimal
+    categoria_venta_id: int
+    subtotal: Decimal
     requiere_confirmacion: bool
 
 
@@ -76,11 +82,8 @@ class OrderService:
         cliente = self._upsert_cliente(data.nombre_apellido, data.telefono)
         codigo = next_business_code(self.session, "pedido_codigo_seq", "PED")
         costo_envio = self._snapshot_delivery_cost(data.zona_envio_id)
-        priced_items = self._price_items(data.items)
-        monto_items = sum(
-            (priced_item.precio_unitario * priced_item.item.cantidad for priced_item in priced_items),
-            Decimal("0"),
-        )
+        priced_items = self._price_items(data.items, data.contexto_origen)
+        monto_items = sum((priced_item.subtotal for priced_item in priced_items), Decimal("0"))
         monto_total = self._money(monto_items + costo_envio)
         requires_confirmation = any(item.requiere_confirmacion for item in priced_items)
         estado = (
@@ -112,8 +115,10 @@ class OrderService:
                     pedido_id=pedido.id or 0,
                     producto_id=priced_item.item.producto_id,
                     producto_combo_id=priced_item.item.producto_combo_id,
+                    categoria_venta_id=priced_item.categoria_venta_id,
                     cantidad=priced_item.item.cantidad,
                     precio_unitario=priced_item.precio_unitario,
+                    subtotal=priced_item.subtotal,
                 )
             )
 
@@ -170,39 +175,93 @@ class OrderService:
             raise ValidationError("Zona de envio inexistente.")
         return self._money(zona.costo)
 
-    def _price_items(self, items: list[OrderItemInput]) -> list[PricedItem]:
+    def _price_items(
+        self,
+        items: list[OrderItemInput],
+        contexto_origen: str = DEFAULT_CONTEXT_CODE,
+    ) -> list[PricedItem]:
         products = self._load_products(items)
-        wholesale_prices = self._eligible_wholesale_prices(items, products)
-        promotional_prices = self._eligible_promotional_prices(items)
+        origin_category = self._get_category_by_code(contexto_origen)
+        sale_category = self._resolve_sale_category(items, contexto_origen, origin_category)
+        category_prices = self._prices_for_category(sale_category.id or 0)
+        promotional_prices = (
+            {}
+            if sale_category.codigo in {EVENTS_CONTEXT_CODE, WHOLESALE_CONTEXT_CODE}
+            else self._eligible_promotional_prices(items)
+        )
 
         priced_items: list[PricedItem] = []
         for item in items:
             if item.cantidad <= 0:
                 raise ValidationError("La cantidad debe ser mayor a cero.")
             product = products[item.producto_id]
-            base_price = wholesale_prices.get(item.producto_id)
-            if base_price is None:
-                base_price = promotional_prices.get(item.producto_id, product.precio)
+            base_price = self._item_base_price(
+                product.id or 0,
+                category_prices,
+                promotional_prices,
+                is_combo=False,
+            )
 
             requires_confirmation = False
             unit_price = base_price
             if item.producto_combo_id is not None:
                 combo_product = products[item.producto_combo_id]
-                combo_base_price = wholesale_prices.get(item.producto_combo_id)
-                if combo_base_price is None:
-                    combo_base_price = promotional_prices.get(item.producto_combo_id, combo_product.precio)
+                combo_base_price = self._item_base_price(
+                    combo_product.id or 0,
+                    category_prices,
+                    promotional_prices,
+                    is_combo=True,
+                )
                 combo_rule = self._get_combo_rule(product.id or 0, combo_product.id or 0)
                 unit_price = self._combo_price(combo_rule, base_price, combo_base_price)
                 requires_confirmation = combo_rule.requiere_confirmacion
 
+            unit_price = self._money(unit_price)
             priced_items.append(
                 PricedItem(
                     item=item,
-                    precio_unitario=self._money(unit_price),
+                    precio_unitario=unit_price,
+                    categoria_venta_id=sale_category.id or 0,
+                    subtotal=self._money(unit_price * item.cantidad),
                     requiere_confirmacion=requires_confirmation,
                 )
             )
         return priced_items
+
+    def _resolve_sale_category(
+        self,
+        items: list[OrderItemInput],
+        contexto_origen: str,
+        origin_category: Categoria,
+    ) -> Categoria:
+        if not origin_category.activa:
+            raise ValidationError("El contexto de venta no esta activo.")
+        if origin_category.es_automatica:
+            raise ValidationError("El contexto automatico no puede seleccionarse manualmente.")
+
+        if contexto_origen == EVENTS_CONTEXT_CODE:
+            minimum = origin_category.cantidad_minima_total or 0
+            if self._total_order_units(items) < minimum:
+                raise ValidationError(
+                    f"El contexto EVENTOS requiere un minimo de {minimum} unidades."
+                )
+            return origin_category
+
+        if contexto_origen in WHOLESALE_ELIGIBLE_CONTEXTS:
+            wholesale_category = self._get_category_by_code(WHOLESALE_CONTEXT_CODE)
+            wholesale_minimum = wholesale_category.cantidad_minima_total or 0
+            if (
+                wholesale_category.activa
+                and wholesale_minimum > 0
+                and self._total_order_units(items) >= wholesale_minimum
+            ):
+                return wholesale_category
+
+        return origin_category
+
+    @staticmethod
+    def _total_order_units(items: list[OrderItemInput]) -> int:
+        return sum(item.cantidad for item in items)
 
     def _load_products(self, items: list[OrderItemInput]) -> dict[int, Producto]:
         product_ids = {item.producto_id for item in items}
@@ -214,44 +273,44 @@ class OrderService:
             raise ValidationError(f"Productos inexistentes: {sorted(missing)}.")
         return product_by_id
 
-    def _eligible_wholesale_prices(
-        self,
-        items: list[OrderItemInput],
-        products: dict[int, Producto],
-    ) -> dict[int, Decimal]:
-        quantities_by_category: dict[int, int] = {}
-        for item in items:
-            product = products[item.producto_id]
-            quantities_by_category[product.categoria_id] = (
-                quantities_by_category.get(product.categoria_id, 0) + item.cantidad
+    def _get_category_by_code(self, code: str) -> Categoria:
+        category = self.session.exec(select(Categoria).where(Categoria.codigo == code)).first()
+        if category is None:
+            raise ValidationError(f"Contexto de venta inexistente: {code}.")
+        return category
+
+    def _prices_for_category(self, category_id: int) -> dict[int, Decimal]:
+        rows = self.session.exec(
+            select(ProductoCategoria).where(
+                ProductoCategoria.categoria_id == category_id,
+                ProductoCategoria.activo == True,  # noqa: E712
             )
+        ).all()
+        return {row.producto_id: row.precio for row in rows}
 
-        prices: dict[int, Decimal] = {}
-        for category_id, quantity in quantities_by_category.items():
-            rule = self.session.exec(
-                select(ReglaMayorista).where(
-                    ReglaMayorista.categoria_id == category_id,
-                    ReglaMayorista.activa == True,  # noqa: E712
-                )
-            ).first()
-            if rule is None:
-                continue
-            if quantity < rule.cantidad_minima_total:
-                continue
-
-            rows = self.session.exec(
-                select(PrecioMayoristaProducto).where(
-                    PrecioMayoristaProducto.regla_mayorista_id == rule.id
-                )
-            ).all()
-            for row in rows:
-                prices[row.producto_id] = row.precio_unitario_mayorista
-        return prices
+    def _item_base_price(
+        self,
+        product_id: int,
+        category_prices: dict[int, Decimal],
+        promotional_prices: dict[int, Decimal],
+        *,
+        is_combo: bool,
+    ) -> Decimal:
+        if product_id not in category_prices:
+            raise ValidationError("El producto no tiene precio configurado para el contexto.")
+        if is_combo:
+            return category_prices[product_id]
+        return promotional_prices.get(product_id, category_prices[product_id])
 
     def _eligible_promotional_prices(self, items: list[OrderItemInput]) -> dict[int, Decimal]:
         quantities_by_product = {
-            item.producto_id: sum(i.cantidad for i in items if i.producto_id == item.producto_id)
+            item.producto_id: sum(
+                i.cantidad
+                for i in items
+                if i.producto_id == item.producto_id and i.producto_combo_id is None
+            )
             for item in items
+            if item.producto_combo_id is None
         }
         promotions = self.session.exec(
             select(Promocion).where(

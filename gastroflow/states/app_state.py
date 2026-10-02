@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import json
 import os
+from pathlib import Path
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -9,12 +11,25 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import reflex as rx
+from openpyxl import Workbook
 from sqlmodel import Session, select
 
 from gastroflow.data.database import engine
 from gastroflow.domain.enums import EstadoPedido, FormaPago, RolUsuario
 from gastroflow.domain.errors import DomainError
-from gastroflow.models import Categoria, Cliente, Gasto, Pedido, Producto, UsuarioRead, ZonaEnvio
+from gastroflow.models import (
+    Categoria,
+    Cliente,
+    Gasto,
+    Pedido,
+    PedidoItem,
+    Producto,
+    ProductoCategoria,
+    Marca,
+    MotivoGasto,
+    UsuarioRead,
+    ZonaEnvio,
+)
 from gastroflow.services import (
     AdminCrudService,
     AuthService,
@@ -27,6 +42,7 @@ from gastroflow.services import (
 )
 
 MONEY_QUANT = Decimal("0.01")
+UPLOAD_ROOT = Path("uploads")
 STORE_NAME = os.getenv("STORE_NAME", "")
 PIZZERIA_WHATSAPP_PHONE = os.getenv("PIZZERIA_WHATSAPP_PHONE", "")
 TRANSFER_TITULAR = os.getenv("TRANSFER_TITULAR", "")
@@ -56,6 +72,29 @@ def _display_record_row(record: dict[str, Any]) -> dict[str, Any]:
 def _money_text(value: Decimal | str | int) -> str:
     amount = Decimal(str(value)).quantize(MONEY_QUANT)
     return f"{amount:.2f}".replace(".", ",")
+
+
+def _xlsx_download(rows: list[dict[str, Any]], filename: str) -> rx.event.EventSpec:
+    workbook = Workbook()
+    sheet = workbook.active
+    if rows:
+        headers = list(rows[0].keys())
+        sheet.append(headers)
+        for row in rows:
+            sheet.append([row.get(header, "") for header in headers])
+    else:
+        sheet.append(["sin_datos"])
+    stream = io.BytesIO()
+    workbook.save(stream)
+    return rx.download(
+        data=stream.getvalue(),
+        filename=filename,
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+def _contains(value: str, filter_value: str) -> bool:
+    return not filter_value.strip() or filter_value.strip().lower() in value.lower()
 
 
 def _parse_delivery_date(value: str) -> date:
@@ -164,36 +203,61 @@ class PublicOrderState(rx.State):
 
     def load_catalog(self) -> None:
         with Session(engine) as session:
-            categories = session.exec(select(Categoria)).all()
+            categories = session.exec(
+                select(Categoria).where(
+                    Categoria.visible_cliente == True,  # noqa: E712
+                    Categoria.es_automatica == False,  # noqa: E712
+                    Categoria.activa == True,  # noqa: E712
+                )
+            ).all()
             products = session.exec(select(Producto)).all()
+            product_categories = session.exec(
+                select(ProductoCategoria).where(ProductoCategoria.activo == True)  # noqa: E712
+            ).all()
             zones = session.exec(select(ZonaEnvio)).all()
 
         category_names = {category.id: category.nombre for category in categories}
+        product_by_id = {product.id: product for product in products if product.activo}
         product_count_by_category: dict[int, int] = {}
-        for product in products:
-            product_count_by_category[product.categoria_id] = product_count_by_category.get(product.categoria_id, 0) + 1
+        for product_category in product_categories:
+            if product_category.categoria_id in category_names and product_category.producto_id in product_by_id:
+                product_count_by_category[product_category.categoria_id] = (
+                    product_count_by_category.get(product_category.categoria_id, 0) + 1
+                )
 
         self.categories = [
             {
                 "id": category.id,
                 "codigo": category.codigo,
                 "nombre": category.nombre,
+                "descripcion": category.descripcion_publica or "",
+                "foto": category.foto_url or "",
+                "orden": category.orden,
                 "total": product_count_by_category.get(category.id or 0, 0),
             }
-            for category in categories
+            for category in sorted(categories, key=lambda item: (item.orden, item.nombre))
         ]
         self.products = [
             {
                 "id": product.id,
-                "categoria_id": product.categoria_id,
-                "categoria": category_names.get(product.categoria_id, ""),
+                "categoria_id": product_category.categoria_id,
+                "categoria": category_names.get(product_category.categoria_id, ""),
                 "codigo": product.codigo,
                 "nombre": product.nombre,
-                "precio": str(product.precio),
-                "descripcion": product.descripcion or "Producto artesanal listo para sumar a tu pedido.",
-                "foto": (product.fotos or [""])[0] if product.fotos else "",
+                "precio": str(product_category.precio),
+                "descripcion": (
+                    product_category.descripcion_publica
+                    or product.descripcion
+                    or "Producto artesanal listo para sumar a tu pedido."
+                ),
+                "foto": product_category.foto_url or ((product.fotos or [""])[0] if product.fotos else ""),
+                "orden": product_category.orden,
+                "destacado": product_category.destacado,
             }
-            for product in products
+            for product_category in sorted(product_categories, key=lambda item: (item.orden, item.id or 0))
+            if product_category.categoria_id in category_names
+            and (product := product_by_id.get(product_category.producto_id)) is not None
+            and product_category.visible
         ]
         self.zones = [
             {
@@ -464,23 +528,129 @@ class PublicOrderState(rx.State):
 
 class OperationsState(rx.State):
     orders: list[dict[str, Any]] = []
+    order_rows: list[dict[str, Any]] = []
+    order_kpis: dict[str, str] = {
+        "total_pedidos": "0",
+        "items": "0",
+        "ticket_promedio": "0,00",
+        "facturacion": "0,00",
+    }
+    filter_month: str = ""
+    filter_date_from: str = ""
+    filter_date_to: str = ""
+    filter_category: str = ""
+    filter_client: str = ""
+    filter_payment: str = ""
+    filter_state: str = ""
     message: str = ""
 
     def load_orders(self) -> None:
         with Session(engine) as session:
             pedidos = session.exec(select(Pedido)).all()
             clientes = {cliente.id: cliente for cliente in session.exec(select(Cliente)).all()}
-        self.orders = [
-            {
+            items = session.exec(select(PedidoItem)).all()
+            categorias = {categoria.id: categoria for categoria in session.exec(select(Categoria)).all()}
+            productos = {producto.id: producto for producto in session.exec(select(Producto)).all()}
+
+        items_by_order: dict[int, list[Any]] = {}
+        for item in items:
+            items_by_order.setdefault(item.pedido_id, []).append(item)
+
+        rows: list[dict[str, Any]] = []
+        cards: list[dict[str, Any]] = []
+        for pedido in pedidos:
+            cliente = clientes.get(pedido.cliente_id)
+            pedido_items = items_by_order.get(pedido.id or 0, [])
+            item_count = sum(item.cantidad for item in pedido_items)
+            category_names = sorted(
+                {
+                    categorias[item.categoria_venta_id].nombre
+                    for item in pedido_items
+                    if item.categoria_venta_id in categorias
+                }
+            )
+            product_names = [
+                productos[item.producto_id].nombre
+                for item in pedido_items
+                if item.producto_id in productos
+            ]
+            row = {
                 "id": pedido.id,
                 "codigo": pedido.codigo,
-                "cliente": clientes.get(pedido.cliente_id).nombre_apellido if clientes.get(pedido.cliente_id) else "",
+                "cliente": cliente.nombre_apellido if cliente else "",
+                "telefono": cliente.telefono if cliente else "",
                 "estado": pedido.estado.value,
+                "forma_pago": pedido.forma_pago.value,
+                "fecha": pedido.fecha_entrega.isoformat(),
+                "mes": pedido.fecha_entrega.strftime("%Y-%m"),
+                "categorias": ", ".join(category_names),
+                "productos": ", ".join(product_names),
+                "items": item_count,
+                "envio": str(pedido.costo_envio),
                 "total": str(pedido.monto_total),
-                "fecha": str(pedido.fecha_entrega),
+                "total_display": _money_text(pedido.monto_total),
             }
-            for pedido in pedidos
+            rows.append(row)
+            if pedido.estado not in {EstadoPedido.ENTREGADO, EstadoPedido.CANCELADO}:
+                cards.append(row)
+
+        filtered = [row for row in rows if self._matches_order_filters(row)]
+        total = sum((Decimal(str(row["total"])) for row in filtered), Decimal("0.00"))
+        item_total = sum(int(row["items"]) for row in filtered)
+        average = total / Decimal(len(filtered)) if filtered else Decimal("0.00")
+        self.order_rows = filtered
+        self.orders = [row for row in cards if self._matches_order_filters(row)]
+        self.order_kpis = {
+            "total_pedidos": str(len(filtered)),
+            "items": str(item_total),
+            "ticket_promedio": _money_text(average),
+            "facturacion": _money_text(total),
+        }
+
+    def _matches_order_filters(self, row: dict[str, Any]) -> bool:
+        if self.filter_month.strip() and row["mes"] != self.filter_month.strip():
+            return False
+        if self.filter_date_from.strip() and row["fecha"] < self.filter_date_from.strip():
+            return False
+        if self.filter_date_to.strip() and row["fecha"] > self.filter_date_to.strip():
+            return False
+        if self.filter_payment.strip() and row["forma_pago"] != self.filter_payment.strip():
+            return False
+        if self.filter_state.strip() and row["estado"] != self.filter_state.strip():
+            return False
+        return (
+            _contains(row["categorias"], self.filter_category)
+            and _contains(row["cliente"], self.filter_client)
+        )
+
+    def clear_order_filters(self) -> None:
+        self.filter_month = ""
+        self.filter_date_from = ""
+        self.filter_date_to = ""
+        self.filter_category = ""
+        self.filter_client = ""
+        self.filter_payment = ""
+        self.filter_state = ""
+        self.load_orders()
+
+    def export_orders_xlsx(self) -> rx.event.EventSpec:
+        export_rows = [
+            {
+                "codigo": row["codigo"],
+                "fecha": row["fecha"],
+                "cliente": row["cliente"],
+                "telefono": row["telefono"],
+                "estado": row["estado"],
+                "forma_pago": row["forma_pago"],
+                "categorias": row["categorias"],
+                "productos": row["productos"],
+                "items": row["items"],
+                "envio": row["envio"],
+                "total": row["total"],
+            }
+            for row in self.order_rows
         ]
+        return _xlsx_download(export_rows, "pedidos_filtrados.xlsx")
 
     async def transition(self, pedido_id: int, next_state: str) -> None:
         auth = await self.get_state(AuthState)
@@ -510,21 +680,88 @@ class ExpenseState(rx.State):
     lugar_texto: str = ""
     message: str = ""
     expenses: list[dict[str, Any]] = []
+    expense_rows: list[dict[str, Any]] = []
+    expense_kpis: dict[str, str] = {
+        "total_gastos": "0",
+        "monto_total": "0,00",
+        "ticket_promedio": "0,00",
+    }
+    filter_month: str = ""
+    filter_date_from: str = ""
+    filter_date_to: str = ""
+    filter_motivo: str = ""
+    filter_marca: str = ""
+    filter_lugar: str = ""
 
     def load_expenses(self) -> None:
         with Session(engine) as session:
             gastos = session.exec(select(Gasto)).all()
-        self.expenses = [
+            motivos = {motivo.id: motivo for motivo in session.exec(select(MotivoGasto)).all()}
+            marcas = {marca.id: marca for marca in session.exec(select(Marca)).all()}
+
+        rows = [
             {
                 "codigo": gasto.codigo,
-                "fecha": str(gasto.fecha),
+                "fecha": gasto.fecha.isoformat(),
+                "mes": gasto.fecha.strftime("%Y-%m"),
+                "motivo": motivos[gasto.motivo_gasto_id].nombre if gasto.motivo_gasto_id in motivos else "",
+                "marca": marcas[gasto.marca_id].nombre if gasto.marca_id in marcas else "",
                 "cantidad": str(gasto.cantidad),
                 "unidad": gasto.unidad_medida,
                 "precio": str(gasto.precio),
+                "precio_display": _money_text(gasto.precio),
                 "lugar": gasto.lugar_texto,
             }
             for gasto in gastos
         ]
+        filtered = [row for row in rows if self._matches_expense_filters(row)]
+        total = sum((Decimal(str(row["precio"])) for row in filtered), Decimal("0.00"))
+        average = total / Decimal(len(filtered)) if filtered else Decimal("0.00")
+        self.expense_rows = filtered
+        self.expenses = filtered
+        self.expense_kpis = {
+            "total_gastos": str(len(filtered)),
+            "monto_total": _money_text(total),
+            "ticket_promedio": _money_text(average),
+        }
+
+    def _matches_expense_filters(self, row: dict[str, Any]) -> bool:
+        if self.filter_month.strip() and row["mes"] != self.filter_month.strip():
+            return False
+        if self.filter_date_from.strip() and row["fecha"] < self.filter_date_from.strip():
+            return False
+        if self.filter_date_to.strip() and row["fecha"] > self.filter_date_to.strip():
+            return False
+        return (
+            _contains(row["motivo"], self.filter_motivo)
+            and _contains(row["marca"], self.filter_marca)
+            and _contains(row["lugar"], self.filter_lugar)
+        )
+
+    def clear_expense_filters(self) -> None:
+        self.filter_month = ""
+        self.filter_date_from = ""
+        self.filter_date_to = ""
+        self.filter_motivo = ""
+        self.filter_marca = ""
+        self.filter_lugar = ""
+        self.load_expenses()
+
+    def export_expenses_xlsx(self) -> rx.event.EventSpec:
+        export_rows = [
+            {
+                "codigo": row["codigo"],
+                "fecha": row["fecha"],
+                "motivo": row["motivo"],
+                "marca": row["marca"],
+                "cantidad": row["cantidad"],
+                "unidad": row["unidad"],
+                "precio": row["precio"],
+                "lugar": row["lugar"],
+            }
+            for row in self.expense_rows
+        ]
+        return _xlsx_download(export_rows, "gastos_filtrados.xlsx")
 
     async def submit_expense(self) -> None:
         auth = await self.get_state(AuthState)
@@ -547,6 +784,191 @@ class ExpenseState(rx.State):
             self.load_expenses()
         except Exception as exc:
             self.message = str(exc)
+
+
+class CatalogAdminState(rx.State):
+    categories: list[dict[str, Any]] = []
+    products: list[dict[str, Any]] = []
+    selected_category_id: str = ""
+    selected_product_category_id: str = ""
+    category_nombre: str = ""
+    category_descripcion: str = ""
+    category_orden: str = "0"
+    category_visible: bool = True
+    product_price: str = "0"
+    product_description: str = ""
+    product_order: str = "0"
+    product_visible: bool = True
+    product_featured: bool = False
+    message: str = ""
+
+    async def load_catalog_admin(self) -> None:
+        auth = await self.get_state(AuthState)
+        if auth.role != RolUsuario.ADMIN.value:
+            self.message = "Solo Admin puede editar catalogo."
+            return
+        self._load_catalog_data()
+
+    def _load_catalog_data(self) -> None:
+        with Session(engine) as session:
+            categories = session.exec(select(Categoria)).all()
+            product_categories = session.exec(select(ProductoCategoria)).all()
+            products = {product.id: product for product in session.exec(select(Producto)).all()}
+
+        counts: dict[int, int] = {}
+        for product_category in product_categories:
+            counts[product_category.categoria_id] = counts.get(product_category.categoria_id, 0) + 1
+
+        self.categories = [
+            {
+                "id": category.id,
+                "codigo": category.codigo,
+                "nombre": category.nombre,
+                "descripcion": category.descripcion_publica or "",
+                "foto": category.foto_url or "",
+                "orden": str(category.orden),
+                "visible": category.visible_cliente,
+                "automatica": category.es_automatica,
+                "total": counts.get(category.id or 0, 0),
+            }
+            for category in sorted(categories, key=lambda item: (item.orden, item.nombre))
+        ]
+        selected_category = int(self.selected_category_id) if self.selected_category_id else 0
+        self.products = [
+            {
+                "id": product_category.id,
+                "producto_id": product.id,
+                "categoria_id": product_category.categoria_id,
+                "nombre": product.nombre,
+                "codigo": product.codigo,
+                "precio": str(product_category.precio),
+                "precio_display": _money_text(product_category.precio),
+                "descripcion": product_category.descripcion_publica or product.descripcion or "",
+                "foto": product_category.foto_url or "",
+                "visible": product_category.visible,
+                "orden": str(product_category.orden),
+                "destacado": product_category.destacado,
+                "activo": product_category.activo,
+            }
+            for product_category in sorted(product_categories, key=lambda item: (item.orden, item.id or 0))
+            if (not selected_category or product_category.categoria_id == selected_category)
+            and (product := products.get(product_category.producto_id)) is not None
+        ]
+
+    def select_category(self, category_id: int) -> None:
+        self.selected_category_id = str(category_id)
+        selected = next((category for category in self.categories if str(category["id"]) == str(category_id)), {})
+        self.category_nombre = selected.get("nombre", "")
+        self.category_descripcion = selected.get("descripcion", "")
+        self.category_orden = selected.get("orden", "0")
+        self.category_visible = bool(selected.get("visible", True))
+        self.selected_product_category_id = ""
+        self._load_catalog_data()
+
+    def select_product_category(self, product_category_id: int) -> None:
+        self.selected_product_category_id = str(product_category_id)
+        selected = next(
+            (item for item in self.products if str(item["id"]) == str(product_category_id)),
+            {},
+        )
+        self.product_price = selected.get("precio", "0")
+        self.product_description = selected.get("descripcion", "")
+        self.product_order = selected.get("orden", "0")
+        self.product_visible = bool(selected.get("visible", True))
+        self.product_featured = bool(selected.get("destacado", False))
+
+    async def save_category(self) -> None:
+        auth = await self.get_state(AuthState)
+        if auth.role != RolUsuario.ADMIN.value:
+            self.message = "Solo Admin puede editar catalogo."
+            return
+        if not self.selected_category_id:
+            self.message = "Selecciona una categoria."
+            return
+        try:
+            with Session(engine) as session:
+                category = session.get(Categoria, int(self.selected_category_id))
+                if category is None:
+                    raise ValueError("Categoria inexistente.")
+                category.nombre = self.category_nombre.strip() or category.nombre
+                category.descripcion_publica = self.category_descripcion.strip() or None
+                category.orden = int(self.category_orden or "0")
+                category.visible_cliente = self.category_visible
+                session.add(category)
+                session.commit()
+            self.message = "Categoria actualizada."
+            self._load_catalog_data()
+        except Exception as exc:
+            self.message = str(exc)
+
+    async def save_product_category(self) -> None:
+        auth = await self.get_state(AuthState)
+        if auth.role != RolUsuario.ADMIN.value:
+            self.message = "Solo Admin puede editar catalogo."
+            return
+        if not self.selected_product_category_id:
+            self.message = "Selecciona un producto de la categoria."
+            return
+        try:
+            with Session(engine) as session:
+                product_category = session.get(ProductoCategoria, int(self.selected_product_category_id))
+                if product_category is None:
+                    raise ValueError("Producto de categoria inexistente.")
+                product_category.precio = Decimal(self.product_price).quantize(MONEY_QUANT)
+                product_category.descripcion_publica = self.product_description.strip() or None
+                product_category.orden = int(self.product_order or "0")
+                product_category.visible = self.product_visible
+                product_category.destacado = self.product_featured
+                session.add(product_category)
+                session.commit()
+            self.message = "Producto actualizado."
+            self._load_catalog_data()
+        except Exception as exc:
+            self.message = str(exc)
+
+    async def upload_category_photo(self, files: list[rx.UploadFile]) -> None:
+        auth = await self.get_state(AuthState)
+        if auth.role != RolUsuario.ADMIN.value or not self.selected_category_id:
+            self.message = "Selecciona una categoria antes de subir foto."
+            return
+        if not files:
+            return
+        relative_path = await self._save_upload(files[0], "categories")
+        with Session(engine) as session:
+            category = session.get(Categoria, int(self.selected_category_id))
+            if category is not None:
+                category.foto_url = relative_path
+                session.add(category)
+                session.commit()
+        self.message = "Foto de categoria actualizada."
+        self._load_catalog_data()
+
+    async def upload_product_photo(self, files: list[rx.UploadFile]) -> None:
+        auth = await self.get_state(AuthState)
+        if auth.role != RolUsuario.ADMIN.value or not self.selected_product_category_id:
+            self.message = "Selecciona un producto antes de subir foto."
+            return
+        if not files:
+            return
+        relative_path = await self._save_upload(files[0], "product-categories")
+        with Session(engine) as session:
+            product_category = session.get(ProductoCategoria, int(self.selected_product_category_id))
+            if product_category is not None:
+                product_category.foto_url = relative_path
+                session.add(product_category)
+                session.commit()
+        self.message = "Foto del producto actualizada."
+        self._load_catalog_data()
+
+    async def _save_upload(self, file: rx.UploadFile, folder: str) -> str:
+        upload_dir = Path(rx.get_upload_dir()) / folder
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = "".join(char for char in file.filename if char.isalnum() or char in {".", "-", "_"})
+        filename = f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}_{safe_name}"
+        path = upload_dir / filename
+        content = await file.read()
+        path.write_bytes(content)
+        return f"/uploaded_files/{folder}/{filename}"
 
 
 class AdminCrudState(rx.State):
