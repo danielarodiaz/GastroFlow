@@ -18,8 +18,8 @@ services:
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-gastroflow}
       POSTGRES_USER: ${POSTGRES_USER:-gastroflow}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gastroflow_dev_password}
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gastroflow}:${POSTGRES_PASSWORD:-gastroflow_dev_password}@db:5432/${POSTGRES_DB:-gastroflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gastroflow}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gastroflow}:${POSTGRES_PASSWORD:-gastroflow}@db:5432/${POSTGRES_DB:-gastroflow}
     ports:
       - "${REFLEX_FRONTEND_PORT:-3000}:3000"
       - "${REFLEX_BACKEND_PORT:-8000}:8000"
@@ -35,9 +35,9 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-gastroflow}
       POSTGRES_USER: ${POSTGRES_USER:-gastroflow}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gastroflow_dev_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gastroflow}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

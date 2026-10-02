@@ -11,5 +11,5 @@ __pycache__/
 .ruff_cache/
 .web/
 node_modules/
-data/
+/data/
 *.log

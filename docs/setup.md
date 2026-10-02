@@ -41,7 +41,10 @@ Servicios:
 
 - App Reflex: http://localhost:3000
 - Backend Reflex/WebSocket: http://localhost:8000
-- Postgres: localhost:5432
+- Postgres para herramientas locales: localhost:5433
+
+El puerto externo `5433` evita chocar con instalaciones locales de PostgreSQL que suelen usar `5432`.
+Dentro de Docker, la app se conecta al servicio `db` por el puerto interno `5432`.
 
 ## Apagar el entorno
 
