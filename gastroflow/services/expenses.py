@@ -45,9 +45,9 @@ class ExpenseService:
             motivo_gasto_id=motivo.id or 0,
             marca_id=marca.id or 0,
             cantidad=self._quantity(data.cantidad),
-            unidad_medida=data.unidad_medida.strip(),
+            unidad_medida=normalize_catalog_name(data.unidad_medida),
             precio=self._money(data.precio),
-            lugar_texto=data.lugar_texto.strip(),
+            lugar_texto=normalize_catalog_name(data.lugar_texto),
             lugar_lat=data.lugar_lat,
             lugar_lng=data.lugar_lng,
         )
@@ -124,4 +124,4 @@ class ExpenseService:
 
 
 def normalize_catalog_name(value: str) -> str:
-    return " ".join(value.strip().split())
+    return " ".join(value.strip().split()).upper()

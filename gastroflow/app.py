@@ -114,16 +114,17 @@ def input_style() -> dict[str, str]:
 def select_style() -> dict[str, str]:
     return {
         **input_style(),
+        "background_color": "#fffdf5",
         "width": "100%",
         "height": "2.5rem",
     }
 
 
 def placeholder_style() -> dict[str, str]:
-    return {"color": "#6c757d"}
+    return {"color": "#725f45", "opacity": "0.9"}
 
 
-def panel(*children: rx.Component, accent: bool = False) -> rx.Component:
+def panel(*children: rx.Component, accent: bool = False, **props: str) -> rx.Component:
     return rx.box(
         rx.vstack(*children, spacing="4", align="stretch"),
         width="100%",
@@ -132,6 +133,7 @@ def panel(*children: rx.Component, accent: bool = False) -> rx.Component:
         border_radius="18px",
         padding="1rem",
         box_shadow="0 18px 48px rgba(23, 46, 29, 0.10)",
+        **props,
     )
 
 
@@ -619,8 +621,19 @@ def internal_nav() -> rx.Component:
             rx.link("Pedidos", href="/pedidos", style=link_style),
             rx.link("Gastos", href="/gastos", style=link_style),
             rx.link("Catalogo", href="/catalogo-admin", style=link_style),
+            rx.link("Promos", href="/promociones", style=link_style),
             rx.link("Admin", href="/admin", style=link_style),
-            outline_button("Salir", on_click=AuthState.logout),
+            rx.button(
+                rx.hstack(rx.icon("log-out", size=16), rx.text("Salir"), spacing="2", align="center"),
+                on_click=AuthState.logout,
+                border_radius="999px",
+                padding="0.65rem 0.95rem",
+                background=RED,
+                color="#fff8e5",
+                border="1px solid rgba(169, 15, 43, 0.25)",
+                font_weight="900",
+                cursor="pointer",
+            ),
             width="100%",
             max_width="1180px",
             padding="1rem",
@@ -748,10 +761,10 @@ def order_filters() -> rx.Component:
     return panel(
         rx.grid(
             field("Mes", rx.select(OperationsState.month_options, value=OperationsState.filter_month, on_change=OperationsState.set_filter_month, placeholder="Todos", style=select_style())),
-            field("Desde", rx.input(value=OperationsState.filter_date_from, on_change=OperationsState.set_filter_date_from, placeholder="DD/MM/AAAA", max_length=10, style=input_style())),
-            field("Hasta", rx.input(value=OperationsState.filter_date_to, on_change=OperationsState.set_filter_date_to, placeholder="DD/MM/AAAA", max_length=10, style=input_style())),
+            field("Desde", rx.input(value=OperationsState.filter_date_from, on_change=OperationsState.set_filter_date_from, placeholder="DD/MM/AAAA", max_length=10, style=input_style(), _placeholder=placeholder_style())),
+            field("Hasta", rx.input(value=OperationsState.filter_date_to, on_change=OperationsState.set_filter_date_to, placeholder="DD/MM/AAAA", max_length=10, style=input_style(), _placeholder=placeholder_style())),
             field("Categoria", rx.select(OperationsState.category_options, value=OperationsState.filter_category, on_change=OperationsState.set_filter_category, placeholder="Todos", style=select_style())),
-            field("Cliente", rx.input(value=OperationsState.filter_client, on_change=OperationsState.set_filter_client, style=input_style())),
+            field("Cliente", rx.input(value=OperationsState.filter_client, on_change=OperationsState.set_filter_client, placeholder="Cliente", style=input_style(), _placeholder=placeholder_style())),
             field("Pago", rx.select(OperationsState.payment_options, value=OperationsState.filter_payment, on_change=OperationsState.set_filter_payment, placeholder="Todos", style=select_style())),
             field("Estado", rx.select(OperationsState.state_options, value=OperationsState.filter_state, on_change=OperationsState.set_filter_state, placeholder="Todos", style=select_style())),
             columns="repeat(auto-fit, minmax(min(100%, 150px), 1fr))",
@@ -783,6 +796,11 @@ def orders_page() -> rx.Component:
             spacing="4",
             width="100%",
         ),
+        rx.cond(
+            OperationsState.no_active_order_data,
+            rx.text("No hay pedidos activos para mostrar.", color="#725f45", font_weight="900"),
+            rx.fragment(),
+        ),
         rx.heading("Todos los pedidos", size="5", font_family=FONT_STACK, color=GREEN),
         order_filters(),
         rx.grid(
@@ -793,6 +811,11 @@ def orders_page() -> rx.Component:
             columns="repeat(auto-fit, minmax(min(100%, 170px), 1fr))",
             spacing="3",
             width="100%",
+        ),
+        rx.cond(
+            OperationsState.no_order_data,
+            rx.text("No hay datos para el filtro elegido", color=RED, font_weight="900"),
+            rx.fragment(),
         ),
         rx.box(
             rx.vstack(
@@ -830,7 +853,7 @@ def expense_card(expense: rx.Var[dict]) -> rx.Component:
             rx.text(expense["codigo"], font_weight="900", color=GREEN),
             rx.text(expense["fecha"], color="#725f45"),
             rx.text(expense["motivo"], " · ", expense["marca"], color=RED, font_weight="900"),
-            rx.text(expense["cantidad"], " ", expense["unidad"]),
+            rx.text(expense["cantidad_display"], " ", expense["unidad"]),
             rx.text("$", expense["precio_display"], font_weight="900"),
             rx.text(expense["lugar"], color="#725f45"),
             spacing="2",
@@ -849,7 +872,7 @@ def expense_table_row(expense: rx.Var[dict]) -> rx.Component:
         table_cell(expense["fecha"]),
         table_cell(expense["motivo"]),
         table_cell(expense["marca"]),
-        table_cell(expense["cantidad"]),
+        table_cell(expense["cantidad_display"]),
         table_cell(expense["unidad"]),
         table_cell(expense["precio_display"], "900"),
         table_cell(expense["lugar"]),
@@ -884,18 +907,18 @@ def expense_form_modal() -> rx.Component:
                             outline_button("Cerrar", on_click=ExpenseState.close_form),
                             width="100%",
                         ),
-                        field("Fecha", rx.input(value=ExpenseState.fecha, on_change=ExpenseState.set_fecha, placeholder="DD/MM/AAAA", max_length=10, style=input_style())),
-                        field("Motivo", rx.input(value=ExpenseState.motivo_nombre, on_change=ExpenseState.set_motivo_nombre, style=input_style())),
-                        field("Marca", rx.input(value=ExpenseState.marca_nombre, on_change=ExpenseState.set_marca_nombre, style=input_style())),
+                        field("Fecha", rx.input(value=ExpenseState.fecha, on_change=ExpenseState.set_fecha, placeholder="DD/MM/AAAA", max_length=10, style=input_style(), _placeholder=placeholder_style())),
+                        field("Motivo", rx.input(value=ExpenseState.motivo_nombre, on_change=ExpenseState.set_motivo_nombre, placeholder="Ej: ACEITE GIRA-SOL", style=input_style(), _placeholder=placeholder_style())),
+                        field("Marca", rx.input(value=ExpenseState.marca_nombre, on_change=ExpenseState.set_marca_nombre, placeholder="Ej: AVICOLA CRUZ PAPAL", style=input_style(), _placeholder=placeholder_style())),
                         rx.grid(
-                            field("Cantidad", rx.input(value=ExpenseState.cantidad, on_change=ExpenseState.set_cantidad, style=input_style())),
-                            field("Unidad", rx.input(value=ExpenseState.unidad_medida, on_change=ExpenseState.set_unidad_medida, style=input_style())),
-                            field("Precio", rx.input(value=ExpenseState.precio, on_change=ExpenseState.set_precio, style=input_style())),
+                            field("Cantidad", rx.input(value=ExpenseState.cantidad, on_change=ExpenseState.set_cantidad, placeholder="4,5 o 4.5", style=input_style(), _placeholder=placeholder_style())),
+                            field("Unidad", rx.input(value=ExpenseState.unidad_medida, on_change=ExpenseState.set_unidad_medida, placeholder="LITROS", style=input_style(), _placeholder=placeholder_style())),
+                            field("Precio", rx.input(value=ExpenseState.precio, on_change=ExpenseState.set_precio, placeholder="$8.500", style=input_style(), _placeholder=placeholder_style())),
                             columns="repeat(auto-fit, minmax(min(100%, 130px), 1fr))",
                             spacing="3",
                             width="100%",
                         ),
-                        field("Lugar", rx.input(value=ExpenseState.lugar_texto, on_change=ExpenseState.set_lugar_texto, style=input_style())),
+                        field("Lugar", rx.input(value=ExpenseState.lugar_texto, on_change=ExpenseState.set_lugar_texto, placeholder="Lugar de compra", style=input_style(), _placeholder=placeholder_style())),
                         rx.cond(
                             ExpenseState.pending_save,
                             rx.vstack(
@@ -956,11 +979,11 @@ def expense_filters() -> rx.Component:
     return panel(
         rx.grid(
             field("Mes", rx.select(ExpenseState.month_options, value=ExpenseState.filter_month, on_change=ExpenseState.set_filter_month, placeholder="Todos", style=select_style())),
-            field("Desde", rx.input(value=ExpenseState.filter_date_from, on_change=ExpenseState.set_filter_date_from, placeholder="DD/MM/AAAA", max_length=10, style=input_style())),
-            field("Hasta", rx.input(value=ExpenseState.filter_date_to, on_change=ExpenseState.set_filter_date_to, placeholder="DD/MM/AAAA", max_length=10, style=input_style())),
-            field("Motivo", rx.input(value=ExpenseState.filter_motivo, on_change=ExpenseState.set_filter_motivo, style=input_style())),
-            field("Marca", rx.input(value=ExpenseState.filter_marca, on_change=ExpenseState.set_filter_marca, style=input_style())),
-            field("Lugar", rx.input(value=ExpenseState.filter_lugar, on_change=ExpenseState.set_filter_lugar, style=input_style())),
+            field("Desde", rx.input(value=ExpenseState.filter_date_from, on_change=ExpenseState.set_filter_date_from, placeholder="DD/MM/AAAA", max_length=10, style=input_style(), _placeholder=placeholder_style())),
+            field("Hasta", rx.input(value=ExpenseState.filter_date_to, on_change=ExpenseState.set_filter_date_to, placeholder="DD/MM/AAAA", max_length=10, style=input_style(), _placeholder=placeholder_style())),
+            field("Motivo", rx.input(value=ExpenseState.filter_motivo, on_change=ExpenseState.set_filter_motivo, placeholder="Motivo", style=input_style(), _placeholder=placeholder_style())),
+            field("Marca", rx.input(value=ExpenseState.filter_marca, on_change=ExpenseState.set_filter_marca, placeholder="Marca", style=input_style(), _placeholder=placeholder_style())),
+            field("Lugar", rx.input(value=ExpenseState.filter_lugar, on_change=ExpenseState.set_filter_lugar, placeholder="Lugar", style=input_style(), _placeholder=placeholder_style())),
             columns="repeat(auto-fit, minmax(min(100%, 150px), 1fr))",
             spacing="3",
             width="100%",
@@ -995,6 +1018,11 @@ def expenses_page() -> rx.Component:
             columns="repeat(auto-fit, minmax(min(100%, 170px), 1fr))",
             spacing="3",
             width="100%",
+        ),
+        rx.cond(
+            ExpenseState.no_expense_data,
+            rx.text("No hay datos para el filtro elegido", color=RED, font_weight="900"),
+            rx.fragment(),
         ),
         rx.box(
             rx.vstack(
@@ -1272,7 +1300,7 @@ def catalog_admin_page() -> rx.Component:
                     ),
                     rx.hstack(
                         pill_button("Guardar categoria", on_click=CatalogAdminState.request_save_category, background=RED),
-                        outline_button("Ver productos", on_click=CatalogAdminState.load_catalog_admin),
+                        outline_button("Ver productos", on_click=rx.scroll_to("productos-categoria")),
                         wrap="wrap",
                     ),
                 ),
@@ -1297,6 +1325,7 @@ def catalog_admin_page() -> rx.Component:
                     spacing="3",
                     width="100%",
                 ),
+                id="productos-categoria",
             ),
             panel(
                 rx.heading("Editar producto en categoria", size="5", font_family=FONT_STACK, color=GREEN),
@@ -1335,24 +1364,55 @@ def catalog_admin_page() -> rx.Component:
             spacing="5",
             width="100%",
         ),
+    )
+
+
+def promo_selected_product_row(product: rx.Var[dict]) -> rx.Component:
+    return rx.hstack(
+        rx.text(product["nombre"], font_weight="900", color=GREEN),
+        rx.spacer(),
+        outline_button("Quitar", on_click=CatalogAdminState.remove_promo_product(product["id"])),
+        width="100%",
+        padding="0.55rem 0.7rem",
+        background="#fffaf0",
+        border="1px solid rgba(23, 46, 29, 0.10)",
+        border_radius="12px",
+    )
+
+
+def promotions_page() -> rx.Component:
+    return internal_shell(
+        catalog_confirmations(),
+        rx.hstack(
+            rx.heading("Promociones", size="7", font_family=FONT_STACK, color=GREEN),
+            rx.spacer(),
+            outline_button("Nueva promo", on_click=CatalogAdminState.new_promo),
+            pill_button("Actualizar", on_click=CatalogAdminState.load_catalog_admin),
+            width="100%",
+            wrap="wrap",
+        ),
+        rx.text(CatalogAdminState.message, color=RED, font_weight="900"),
         rx.grid(
             panel(
-                rx.hstack(
-                    rx.heading("Promociones", size="5", font_family=FONT_STACK, color=GREEN),
-                    rx.spacer(),
-                    outline_button("Nueva promo", on_click=CatalogAdminState.new_promo),
-                    width="100%",
-                ),
+                rx.heading("Promos cargadas", size="5", font_family=FONT_STACK, color=GREEN),
                 rx.vstack(rx.foreach(CatalogAdminState.promotions, promo_card), spacing="2", align="stretch"),
             ),
             panel(
                 rx.heading("Editar promo", size="5", font_family=FONT_STACK, color=GREEN),
-                field("Codigo", rx.input(value=CatalogAdminState.promo_codigo, on_change=CatalogAdminState.set_promo_codigo, style=input_style())),
-                field("Nombre", rx.input(value=CatalogAdminState.promo_nombre, on_change=CatalogAdminState.set_promo_nombre, style=input_style())),
+                field("Codigo", rx.input(value=CatalogAdminState.promo_codigo, on_change=CatalogAdminState.set_promo_codigo, placeholder="PROMO-MUZZA", style=input_style(), _placeholder=placeholder_style())),
+                field("Nombre", rx.input(value=CatalogAdminState.promo_nombre, on_change=CatalogAdminState.set_promo_nombre, placeholder="2 MUZZAS", style=input_style(), _placeholder=placeholder_style())),
                 field("Cantidad minima", rx.input(value=CatalogAdminState.promo_cantidad_minima, on_change=CatalogAdminState.set_promo_cantidad_minima, type="number", style=input_style())),
-                field("Precio unitario promocional", rx.input(value=CatalogAdminState.promo_precio, on_change=CatalogAdminState.set_promo_precio, style=input_style())),
-                field("IDs de productos elegibles", rx.input(value=CatalogAdminState.promo_product_ids, on_change=CatalogAdminState.set_promo_product_ids, placeholder="Ej: 1,2,3", style=input_style())),
-                rx.text("Por ahora ingresa IDs separados por coma. Los IDs se ven en Admin > producto; despues lo convertimos a selector visual.", color="#725f45", font_size="0.85rem", font_weight="700"),
+                field("Precio unitario promocional", rx.input(value=CatalogAdminState.promo_precio, on_change=CatalogAdminState.set_promo_precio, placeholder="$8.500", style=input_style(), _placeholder=placeholder_style())),
+                field(
+                    "Producto elegible",
+                    rx.hstack(
+                        rx.select(CatalogAdminState.promo_product_options, value=CatalogAdminState.promo_selected_product, on_change=CatalogAdminState.set_promo_selected_product, placeholder="Elegir producto", style=select_style()),
+                        pill_button("Agregar", on_click=CatalogAdminState.add_selected_promo_product, background=GOLD, color=GREEN),
+                        width="100%",
+                        align="end",
+                    ),
+                ),
+                rx.vstack(rx.foreach(CatalogAdminState.promo_selected_products, promo_selected_product_row), spacing="2", align="stretch"),
                 rx.checkbox("Activa", checked=CatalogAdminState.promo_activa, on_change=CatalogAdminState.set_promo_activa),
                 pill_button("Guardar promo", on_click=CatalogAdminState.save_promo, background=RED),
             ),
@@ -1399,4 +1459,5 @@ app.add_page(login_page, route="/login")
 app.add_page(orders_page, route="/pedidos", on_load=OperationsState.load_orders)
 app.add_page(expenses_page, route="/gastos", on_load=ExpenseState.load_expenses)
 app.add_page(catalog_admin_page, route="/catalogo-admin", on_load=CatalogAdminState.load_catalog_admin)
+app.add_page(promotions_page, route="/promociones", on_load=CatalogAdminState.load_catalog_admin)
 app.add_page(admin_page, route="/admin")

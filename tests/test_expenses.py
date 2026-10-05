@@ -11,7 +11,7 @@ from gastroflow.services.expenses import normalize_catalog_name
 
 
 def test_normalize_catalog_name_collapses_spaces() -> None:
-    assert normalize_catalog_name("  harina   000  ") == "harina 000"
+    assert normalize_catalog_name("  harina   000  ") == "HARINA 000"
 
 
 def test_expense_validation_rejects_negative_price() -> None:

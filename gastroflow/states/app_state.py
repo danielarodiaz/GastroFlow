@@ -45,6 +45,22 @@ from gastroflow.services import (
 )
 
 MONEY_QUANT = Decimal("0.01")
+QUANTITY_QUANT = Decimal("0.001")
+MONTH_OPTIONS = ["Todos", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+MONTH_NUMBERS = {
+    "Enero": "01",
+    "Febrero": "02",
+    "Marzo": "03",
+    "Abril": "04",
+    "Mayo": "05",
+    "Junio": "06",
+    "Julio": "07",
+    "Agosto": "08",
+    "Septiembre": "09",
+    "Octubre": "10",
+    "Noviembre": "11",
+    "Diciembre": "12",
+}
 UPLOAD_ROOT = Path("uploads")
 BRAND_SETTINGS_PATH = Path("uploaded_files") / "brand" / "settings.json"
 STORE_NAME = os.getenv("STORE_NAME", "")
@@ -76,6 +92,32 @@ def _display_record_row(record: dict[str, Any]) -> dict[str, Any]:
 def _money_text(value: Decimal | str | int) -> str:
     amount = Decimal(str(value)).quantize(MONEY_QUANT)
     return f"{amount:.2f}".replace(".", ",")
+
+
+def _quantity_text(value: Decimal | str | int) -> str:
+    amount = Decimal(str(value)).quantize(QUANTITY_QUANT)
+    text = f"{amount:.3f}".rstrip("0").rstrip(".")
+    return text.replace(".", ",")
+
+
+def _upper_text(value: str) -> str:
+    return " ".join(value.strip().split()).upper()
+
+
+def _parse_quantity_input(value: str) -> Decimal:
+    clean = value.strip().replace(" ", "").replace(",", ".")
+    return Decimal(clean).quantize(QUANTITY_QUANT)
+
+
+def _parse_money_input(value: str) -> Decimal:
+    clean = value.strip().replace("$", "").replace(" ", "")
+    if "," in clean:
+        clean = clean.replace(".", "").replace(",", ".")
+    elif clean.count(".") == 1:
+        left, right = clean.split(".", 1)
+        if len(right) == 3 and len(left) <= 3:
+            clean = left + right
+    return Decimal(clean).quantize(MONEY_QUANT)
 
 
 def _xlsx_download(rows: list[dict[str, Any]], filename: str) -> rx.event.EventSpec:
@@ -578,17 +620,19 @@ class OperationsState(rx.State):
         "ticket_promedio": "0,00",
         "facturacion": "0,00",
     }
-    filter_month: str = ""
+    filter_month: str = "Todos"
     filter_date_from: str = ""
     filter_date_to: str = ""
-    filter_category: str = ""
+    filter_category: str = "Todos"
     filter_client: str = ""
-    filter_payment: str = ""
-    filter_state: str = ""
-    month_options: list[str] = ["Todos", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+    filter_payment: str = "Todos"
+    filter_state: str = "Todos"
+    month_options: list[str] = MONTH_OPTIONS
     category_options: list[str] = []
     payment_options: list[str] = ["Todos", FormaPago.EFECTIVO.value, FormaPago.TRANSFERENCIA.value]
     state_options: list[str] = ["Todos"] + [state.value for state in EstadoPedido]
+    no_order_data: bool = False
+    no_active_order_data: bool = False
     message: str = ""
 
     def load_orders(self) -> None:
@@ -648,28 +692,18 @@ class OperationsState(rx.State):
         average = total / Decimal(len(filtered)) if filtered else Decimal("0.00")
         self.order_rows = filtered
         self.orders = [row for row in cards if self._matches_order_filters(row)]
+        self.no_order_data = len(filtered) == 0
+        self.no_active_order_data = len(self.orders) == 0
         self.order_kpis = {
             "total_pedidos": str(len(filtered)),
             "items": str(item_total),
             "ticket_promedio": _money_text(average),
             "facturacion": _money_text(total),
         }
-        self.category_options = ["Todos"] + sorted(
-            {
-                category
-                for row in rows
-                for category in row["categorias"].split(", ")
-                if category
-            }
-        )
+        self.category_options = ["Todos"] + sorted({category.nombre for category in categorias.values()})
 
     def _matches_order_filters(self, row: dict[str, Any]) -> bool:
-        month_numbers = {
-            "Enero": "01", "Febrero": "02", "Marzo": "03", "Abril": "04",
-            "Mayo": "05", "Junio": "06", "Julio": "07", "Agosto": "08",
-            "Septiembre": "09", "Octubre": "10", "Noviembre": "11", "Diciembre": "12",
-        }
-        if self.filter_month.strip() and self.filter_month != "Todos" and row["mes"][5:7] != month_numbers.get(self.filter_month, ""):
+        if self.filter_month.strip() and self.filter_month != "Todos" and row["mes"][5:7] != MONTH_NUMBERS.get(self.filter_month, ""):
             return False
         if self.filter_date_from.strip() and row["fecha_key"] < _date_key(self.filter_date_from):
             return False
@@ -695,13 +729,13 @@ class OperationsState(rx.State):
         self.filter_date_to = _mask_date(value)
 
     def clear_order_filters(self) -> None:
-        self.filter_month = ""
+        self.filter_month = "Todos"
         self.filter_date_from = ""
         self.filter_date_to = ""
-        self.filter_category = ""
+        self.filter_category = "Todos"
         self.filter_client = ""
-        self.filter_payment = ""
-        self.filter_state = ""
+        self.filter_payment = "Todos"
+        self.filter_state = "Todos"
         self.load_orders()
 
     def export_orders_xlsx(self) -> rx.event.EventSpec:
@@ -764,7 +798,8 @@ class ExpenseState(rx.State):
     filter_motivo: str = ""
     filter_marca: str = ""
     filter_lugar: str = ""
-    month_options: list[str] = OperationsState.month_options
+    month_options: list[str] = MONTH_OPTIONS
+    no_expense_data: bool = False
     show_form: bool = False
     pending_delete_id: str = ""
     pending_save: bool = False
@@ -785,6 +820,7 @@ class ExpenseState(rx.State):
                 "motivo": motivos[gasto.motivo_gasto_id].nombre if gasto.motivo_gasto_id in motivos else "",
                 "marca": marcas[gasto.marca_id].nombre if gasto.marca_id in marcas else "",
                 "cantidad": str(gasto.cantidad),
+                "cantidad_display": _quantity_text(gasto.cantidad),
                 "unidad": gasto.unidad_medida,
                 "precio": str(gasto.precio),
                 "precio_display": _money_text(gasto.precio),
@@ -797,6 +833,7 @@ class ExpenseState(rx.State):
         average = total / Decimal(len(filtered)) if filtered else Decimal("0.00")
         self.expense_rows = filtered
         self.expenses = filtered
+        self.no_expense_data = len(filtered) == 0
         self.expense_kpis = {
             "total_gastos": str(len(filtered)),
             "monto_total": _money_text(total),
@@ -804,12 +841,7 @@ class ExpenseState(rx.State):
         }
 
     def _matches_expense_filters(self, row: dict[str, Any]) -> bool:
-        month_numbers = {
-            "Enero": "01", "Febrero": "02", "Marzo": "03", "Abril": "04",
-            "Mayo": "05", "Junio": "06", "Julio": "07", "Agosto": "08",
-            "Septiembre": "09", "Octubre": "10", "Noviembre": "11", "Diciembre": "12",
-        }
-        if self.filter_month.strip() and self.filter_month != "Todos" and row["mes"][5:7] != month_numbers.get(self.filter_month, ""):
+        if self.filter_month.strip() and self.filter_month != "Todos" and row["mes"][5:7] != MONTH_NUMBERS.get(self.filter_month, ""):
             return False
         if self.filter_date_from.strip() and row["fecha_key"] < _date_key(self.filter_date_from):
             return False
@@ -822,7 +854,7 @@ class ExpenseState(rx.State):
         )
 
     def clear_expense_filters(self) -> None:
-        self.filter_month = ""
+        self.filter_month = "Todos"
         self.filter_date_from = ""
         self.filter_date_to = ""
         self.filter_motivo = ""
@@ -832,6 +864,18 @@ class ExpenseState(rx.State):
 
     def set_fecha(self, value: str) -> None:
         self.fecha = _mask_date(value)
+
+    def set_motivo_nombre(self, value: str) -> None:
+        self.motivo_nombre = value.upper()
+
+    def set_marca_nombre(self, value: str) -> None:
+        self.marca_nombre = value.upper()
+
+    def set_unidad_medida(self, value: str) -> None:
+        self.unidad_medida = value.upper()
+
+    def set_lugar_texto(self, value: str) -> None:
+        self.lugar_texto = value.upper()
 
     def set_filter_date_from(self, value: str) -> None:
         self.filter_date_from = _mask_date(value)
@@ -889,7 +933,7 @@ class ExpenseState(rx.State):
                 "fecha": row["fecha"],
                 "motivo": row["motivo"],
                 "marca": row["marca"],
-                "cantidad": row["cantidad"],
+                "cantidad": row["cantidad_display"],
                 "unidad": row["unidad"],
                 "precio": row["precio"],
                 "lugar": row["lugar"],
@@ -915,22 +959,22 @@ class ExpenseState(rx.State):
                     gasto.fecha = expense_date
                     gasto.motivo_gasto_id = motivo.id or 0
                     gasto.marca_id = marca.id or 0
-                    gasto.cantidad = Decimal(self.cantidad)
-                    gasto.unidad_medida = self.unidad_medida.strip()
-                    gasto.precio = Decimal(self.precio).quantize(MONEY_QUANT)
-                    gasto.lugar_texto = self.lugar_texto.strip()
+                    gasto.cantidad = _parse_quantity_input(self.cantidad)
+                    gasto.unidad_medida = _upper_text(self.unidad_medida)
+                    gasto.precio = _parse_money_input(self.precio)
+                    gasto.lugar_texto = _upper_text(self.lugar_texto)
                     session.add(gasto)
                     session.commit()
                     message = f"Gasto {gasto.codigo} modificado."
                 else:
                     payload = ExpenseInput(
                         fecha=expense_date,
-                        motivo_nombre=self.motivo_nombre,
-                        marca_nombre=self.marca_nombre,
-                        cantidad=Decimal(self.cantidad),
-                        unidad_medida=self.unidad_medida,
-                        precio=Decimal(self.precio),
-                        lugar_texto=self.lugar_texto,
+                        motivo_nombre=_upper_text(self.motivo_nombre),
+                        marca_nombre=_upper_text(self.marca_nombre),
+                        cantidad=_parse_quantity_input(self.cantidad),
+                        unidad_medida=_upper_text(self.unidad_medida),
+                        precio=_parse_money_input(self.precio),
+                        lugar_texto=_upper_text(self.lugar_texto),
                     )
                     gasto_read = ExpenseService(session).create_expense(payload, auth.current_user())
                     message = f"Gasto {gasto_read.codigo} agregado."
@@ -972,6 +1016,9 @@ class CatalogAdminState(rx.State):
     products: list[dict[str, Any]] = []
     available_products: list[str] = []
     promotions: list[dict[str, Any]] = []
+    promo_product_options: list[str] = []
+    promo_selected_product: str = ""
+    promo_selected_products: list[dict[str, Any]] = []
     selected_category_id: str = ""
     selected_product_category_id: str = ""
     selected_available_product_id: str = ""
@@ -1063,6 +1110,11 @@ class CatalogAdminState(rx.State):
             if product.activo and product.id not in linked_product_ids
         ]
         product_names = {product_id: product.nombre for product_id, product in products.items()}
+        self.promo_product_options = [
+            f"{product.id} - {product.nombre} ({product.codigo})"
+            for product in sorted(products.values(), key=lambda item: item.nombre)
+            if product.activo
+        ]
         links_by_promo: dict[int, list[str]] = {}
         for link in promotion_links:
             links_by_promo.setdefault(link.promocion_id, []).append(product_names.get(link.producto_id, str(link.producto_id)))
@@ -1079,7 +1131,25 @@ class CatalogAdminState(rx.State):
             }
             for promo in sorted(promotions, key=lambda item: item.codigo)
         ]
+        self._sync_promo_selected_products(product_names)
         self.logo_url = _normalize_upload_path(_read_brand_logo_url())
+
+    def _selected_promo_product_ids(self) -> list[int]:
+        ids: list[int] = []
+        for value in self.promo_product_ids.split(","):
+            clean = value.strip()
+            if clean and clean.isdigit() and int(clean) not in ids:
+                ids.append(int(clean))
+        return ids
+
+    def _sync_promo_selected_products(self, product_names: dict[int | None, str] | None = None) -> None:
+        if product_names is None:
+            with Session(engine) as session:
+                product_names = {product.id: product.nombre for product in session.exec(select(Producto)).all()}
+        self.promo_selected_products = [
+            {"id": product_id, "nombre": product_names.get(product_id, f"Producto {product_id}")}
+            for product_id in self._selected_promo_product_ids()
+        ]
 
     def select_category(self, category_id: int) -> None:
         self.selected_category_id = str(category_id)
@@ -1103,6 +1173,25 @@ class CatalogAdminState(rx.State):
         self.product_visible = bool(selected.get("visible", True))
         self.product_featured = bool(selected.get("destacado", False))
 
+    def set_category_nombre(self, value: str) -> None:
+        self.category_nombre = value.upper()
+
+    def set_category_descripcion(self, value: str) -> None:
+        self.category_descripcion = value.upper()
+
+    def set_product_description(self, value: str) -> None:
+        self.product_description = value.upper()
+
+    def set_promo_codigo(self, value: str) -> None:
+        self.promo_codigo = value.upper()
+
+    def set_promo_nombre(self, value: str) -> None:
+        self.promo_nombre = value.upper()
+
+    def set_promo_product_ids(self, value: str) -> None:
+        self.promo_product_ids = value
+        self._sync_promo_selected_products()
+
     async def save_category(self) -> None:
         auth = await self.get_state(AuthState)
         if auth.role != RolUsuario.ADMIN.value:
@@ -1116,8 +1205,8 @@ class CatalogAdminState(rx.State):
                 category = session.get(Categoria, int(self.selected_category_id))
                 if category is None:
                     raise ValueError("Categoria inexistente.")
-                category.nombre = self.category_nombre.strip() or category.nombre
-                category.descripcion_publica = self.category_descripcion.strip() or None
+                category.nombre = _upper_text(self.category_nombre) or category.nombre
+                category.descripcion_publica = _upper_text(self.category_descripcion) or None
                 category.orden = int(self.category_orden or "0")
                 category.visible_cliente = self.category_visible
                 session.add(category)
@@ -1150,8 +1239,8 @@ class CatalogAdminState(rx.State):
                 product_category = session.get(ProductoCategoria, int(self.selected_product_category_id))
                 if product_category is None:
                     raise ValueError("Producto de categoria inexistente.")
-                product_category.precio = Decimal(self.product_price).quantize(MONEY_QUANT)
-                product_category.descripcion_publica = self.product_description.strip() or None
+                product_category.precio = _parse_money_input(self.product_price)
+                product_category.descripcion_publica = _upper_text(self.product_description) or None
                 product_category.orden = int(self.product_order or "0")
                 product_category.visible = self.product_visible
                 product_category.destacado = self.product_featured
@@ -1194,8 +1283,8 @@ class CatalogAdminState(rx.State):
                 relation = ProductoCategoria(
                     producto_id=product_id,
                     categoria_id=int(self.selected_category_id),
-                    precio=Decimal(self.product_price or "0").quantize(MONEY_QUANT),
-                    descripcion_publica=self.product_description.strip() or None,
+                    precio=_parse_money_input(self.product_price or "0"),
+                    descripcion_publica=_upper_text(self.product_description) or None,
                     foto_url=None,
                     visible=self.product_visible,
                     orden=int(self.product_order or "0"),
@@ -1333,6 +1422,8 @@ class CatalogAdminState(rx.State):
         self.promo_precio = "0"
         self.promo_activa = True
         self.promo_product_ids = ""
+        self.promo_selected_product = ""
+        self.promo_selected_products = []
 
     def select_promo(self, promo_id: int) -> None:
         selected = next((promo for promo in self.promotions if str(promo["id"]) == str(promo_id)), None)
@@ -1347,6 +1438,28 @@ class CatalogAdminState(rx.State):
         with Session(engine) as session:
             links = session.exec(select(PromocionProducto).where(PromocionProducto.promocion_id == promo_id)).all()
         self.promo_product_ids = ",".join(str(link.producto_id) for link in links)
+        self._sync_promo_selected_products()
+
+    def set_promo_selected_product(self, value: str) -> None:
+        self.promo_selected_product = value
+
+    def add_selected_promo_product(self) -> rx.event.EventSpec | None:
+        if not self.promo_selected_product:
+            self.message = "Selecciona un producto para la promocion."
+            return rx.toast.warning(self.message)
+        product_id = int(self.promo_selected_product.split(" - ", 1)[0])
+        ids = self._selected_promo_product_ids()
+        if product_id not in ids:
+            ids.append(product_id)
+        self.promo_product_ids = ",".join(str(item) for item in ids)
+        self.promo_selected_product = ""
+        self._sync_promo_selected_products()
+        return None
+
+    def remove_promo_product(self, product_id: int) -> None:
+        ids = [item for item in self._selected_promo_product_ids() if item != product_id]
+        self.promo_product_ids = ",".join(str(item) for item in ids)
+        self._sync_promo_selected_products()
 
     async def save_promo(self) -> rx.event.EventSpec | None:
         auth = await self.get_state(AuthState)
@@ -1367,20 +1480,20 @@ class CatalogAdminState(rx.State):
                     action = "modificada"
                 else:
                     promo = Promocion(
-                        codigo=self.promo_codigo.strip(),
-                        nombre=self.promo_nombre.strip(),
+                        codigo=_upper_text(self.promo_codigo),
+                        nombre=_upper_text(self.promo_nombre),
                         tipo=TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
                         cantidad_minima=int(self.promo_cantidad_minima),
-                        precio_unitario_promocional=Decimal(self.promo_precio).quantize(MONEY_QUANT),
+                        precio_unitario_promocional=_parse_money_input(self.promo_precio),
                         activa=self.promo_activa,
                     )
                     session.add(promo)
                     session.flush()
                     action = "agregada"
-                promo.codigo = self.promo_codigo.strip()
-                promo.nombre = self.promo_nombre.strip()
+                promo.codigo = _upper_text(self.promo_codigo)
+                promo.nombre = _upper_text(self.promo_nombre)
                 promo.cantidad_minima = int(self.promo_cantidad_minima)
-                promo.precio_unitario_promocional = Decimal(self.promo_precio).quantize(MONEY_QUANT)
+                promo.precio_unitario_promocional = _parse_money_input(self.promo_precio)
                 promo.activa = self.promo_activa
                 session.add(promo)
                 session.flush()
