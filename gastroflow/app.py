@@ -5,6 +5,7 @@ import reflex as rx
 from gastroflow.states.app_state import (
     AdminCrudState,
     AuthState,
+    BrandState,
     CatalogAdminState,
     ExpenseState,
     OperationsState,
@@ -34,8 +35,8 @@ def page_bg(*children: rx.Component) -> rx.Component:
 
 def logo_mark(size: str = "3rem") -> rx.Component:
     return rx.cond(
-        LOGO_SRC != "",
-        rx.image(src=LOGO_SRC, width=size, height=size, border_radius="999px", object_fit="cover"),
+        BrandState.logo_url != "",
+        rx.image(src=rx.get_upload_url(BrandState.logo_url), width=size, height=size, border_radius="999px", object_fit="cover"),
         rx.center(
             rx.text("GF", font_family=FONT_STACK, font_weight="900", color=CREAM),
             width=size,
@@ -107,6 +108,14 @@ def input_style() -> dict[str, str]:
         "box_shadow": "none",
         "color": GREEN,
         "font_weight": "700",
+    }
+
+
+def select_style() -> dict[str, str]:
+    return {
+        **input_style(),
+        "width": "100%",
+        "height": "2.5rem",
     }
 
 
@@ -196,13 +205,12 @@ def category_card(category: rx.Var[dict]) -> rx.Component:
         rx.vstack(
             rx.cond(
                 category["foto"] != "",
-                rx.image(src=category["foto"], width="100%", height="112px", object_fit="cover", border_radius="14px"),
+                rx.image(src=rx.get_upload_url(category["foto"]), width="100%", height="112px", object_fit="cover", border_radius="14px"),
                 food_visual(category["nombre"], "112px"),
             ),
             rx.hstack(
                 rx.box(width="0.75rem", height="2.4rem", border_radius="999px", background=RED),
                 rx.spacer(),
-                rx.text(category["codigo"], color=GOLD, font_weight="900", font_size="0.75rem"),
                 width="100%",
                 align="center",
             ),
@@ -236,7 +244,7 @@ def product_image(product: rx.Var[dict], height: str = "150px") -> rx.Component:
     return rx.cond(
         product["foto"] != "",
         rx.image(
-            src=product["foto"],
+            src=rx.get_upload_url(product["foto"]),
             width="100%",
             height=height,
             object_fit="cover",
@@ -739,13 +747,13 @@ def order_table_row(order: rx.Var[dict]) -> rx.Component:
 def order_filters() -> rx.Component:
     return panel(
         rx.grid(
-            field("Mes", rx.input(value=OperationsState.filter_month, on_change=OperationsState.set_filter_month, placeholder="AAAA-MM", style=input_style())),
-            field("Desde", rx.input(value=OperationsState.filter_date_from, on_change=OperationsState.set_filter_date_from, placeholder="AAAA-MM-DD", style=input_style())),
-            field("Hasta", rx.input(value=OperationsState.filter_date_to, on_change=OperationsState.set_filter_date_to, placeholder="AAAA-MM-DD", style=input_style())),
-            field("Categoria", rx.input(value=OperationsState.filter_category, on_change=OperationsState.set_filter_category, style=input_style())),
+            field("Mes", rx.select(OperationsState.month_options, value=OperationsState.filter_month, on_change=OperationsState.set_filter_month, placeholder="Todos", style=select_style())),
+            field("Desde", rx.input(value=OperationsState.filter_date_from, on_change=OperationsState.set_filter_date_from, placeholder="DD/MM/AAAA", max_length=10, style=input_style())),
+            field("Hasta", rx.input(value=OperationsState.filter_date_to, on_change=OperationsState.set_filter_date_to, placeholder="DD/MM/AAAA", max_length=10, style=input_style())),
+            field("Categoria", rx.select(OperationsState.category_options, value=OperationsState.filter_category, on_change=OperationsState.set_filter_category, placeholder="Todos", style=select_style())),
             field("Cliente", rx.input(value=OperationsState.filter_client, on_change=OperationsState.set_filter_client, style=input_style())),
-            field("Pago", rx.input(value=OperationsState.filter_payment, on_change=OperationsState.set_filter_payment, placeholder="efectivo / transferencia", style=input_style())),
-            field("Estado", rx.input(value=OperationsState.filter_state, on_change=OperationsState.set_filter_state, placeholder="pedido, en_proceso...", style=input_style())),
+            field("Pago", rx.select(OperationsState.payment_options, value=OperationsState.filter_payment, on_change=OperationsState.set_filter_payment, placeholder="Todos", style=select_style())),
+            field("Estado", rx.select(OperationsState.state_options, value=OperationsState.filter_state, on_change=OperationsState.set_filter_state, placeholder="Todos", style=select_style())),
             columns="repeat(auto-fit, minmax(min(100%, 150px), 1fr))",
             spacing="3",
             width="100%",
@@ -845,7 +853,12 @@ def expense_table_row(expense: rx.Var[dict]) -> rx.Component:
         table_cell(expense["unidad"]),
         table_cell(expense["precio_display"], "900"),
         table_cell(expense["lugar"]),
-        columns="130px 130px 180px 180px 110px 100px 120px 220px",
+        rx.hstack(
+            outline_button("Editar", on_click=ExpenseState.open_edit_expense(expense["id"])),
+            pill_button("Borrar", on_click=ExpenseState.request_delete_expense(expense["id"]), background=RED),
+            spacing="2",
+        ),
+        columns="130px 130px 180px 180px 110px 100px 120px 220px 180px",
         width="max-content",
         min_width="100%",
         border_bottom="1px solid rgba(23, 46, 29, 0.10)",
@@ -853,12 +866,98 @@ def expense_table_row(expense: rx.Var[dict]) -> rx.Component:
     )
 
 
+def expense_form_modal() -> rx.Component:
+    return rx.cond(
+        ExpenseState.show_form,
+        rx.box(
+            rx.center(
+                rx.box(
+                    panel(
+                        rx.hstack(
+                            rx.heading(
+                                rx.cond(ExpenseState.editing_expense_id != "", "Modificar gasto", "Agregar gasto"),
+                                size="5",
+                                font_family=FONT_STACK,
+                                color=GREEN,
+                            ),
+                            rx.spacer(),
+                            outline_button("Cerrar", on_click=ExpenseState.close_form),
+                            width="100%",
+                        ),
+                        field("Fecha", rx.input(value=ExpenseState.fecha, on_change=ExpenseState.set_fecha, placeholder="DD/MM/AAAA", max_length=10, style=input_style())),
+                        field("Motivo", rx.input(value=ExpenseState.motivo_nombre, on_change=ExpenseState.set_motivo_nombre, style=input_style())),
+                        field("Marca", rx.input(value=ExpenseState.marca_nombre, on_change=ExpenseState.set_marca_nombre, style=input_style())),
+                        rx.grid(
+                            field("Cantidad", rx.input(value=ExpenseState.cantidad, on_change=ExpenseState.set_cantidad, style=input_style())),
+                            field("Unidad", rx.input(value=ExpenseState.unidad_medida, on_change=ExpenseState.set_unidad_medida, style=input_style())),
+                            field("Precio", rx.input(value=ExpenseState.precio, on_change=ExpenseState.set_precio, style=input_style())),
+                            columns="repeat(auto-fit, minmax(min(100%, 130px), 1fr))",
+                            spacing="3",
+                            width="100%",
+                        ),
+                        field("Lugar", rx.input(value=ExpenseState.lugar_texto, on_change=ExpenseState.set_lugar_texto, style=input_style())),
+                        rx.cond(
+                            ExpenseState.pending_save,
+                            rx.vstack(
+                                rx.text("Estas seguro que quieres guardar este gasto?", color=RED, font_weight="900"),
+                                rx.hstack(
+                                    pill_button("Confirmar", on_click=ExpenseState.submit_expense, background=RED),
+                                    outline_button("Cancelar", on_click=ExpenseState.cancel_save_expense),
+                                ),
+                                spacing="2",
+                                align="stretch",
+                            ),
+                            pill_button("Guardar", on_click=ExpenseState.request_save_expense, background=RED, width="100%"),
+                        ),
+                    ),
+                    width="min(94vw, 560px)",
+                ),
+                min_height="100vh",
+                padding="1rem",
+            ),
+            position="fixed",
+            inset="0",
+            background="rgba(32, 24, 15, 0.42)",
+            z_index="50",
+        ),
+        rx.fragment(),
+    )
+
+
+def expense_delete_confirm() -> rx.Component:
+    return rx.cond(
+        ExpenseState.pending_delete_id != "",
+        rx.box(
+            rx.center(
+                rx.box(
+                    panel(
+                        rx.heading("Eliminar gasto", size="5", font_family=FONT_STACK, color=GREEN),
+                        rx.text("Estas seguro que quieres eliminar este gasto?", color="#725f45", font_weight="800"),
+                        rx.hstack(
+                            pill_button("Eliminar", on_click=ExpenseState.delete_expense, background=RED),
+                            outline_button("Cancelar", on_click=ExpenseState.cancel_delete_expense),
+                        ),
+                    ),
+                    width="min(94vw, 420px)",
+                ),
+                min_height="100vh",
+                padding="1rem",
+            ),
+            position="fixed",
+            inset="0",
+            background="rgba(32, 24, 15, 0.42)",
+            z_index="60",
+        ),
+        rx.fragment(),
+    )
+
+
 def expense_filters() -> rx.Component:
     return panel(
         rx.grid(
-            field("Mes", rx.input(value=ExpenseState.filter_month, on_change=ExpenseState.set_filter_month, placeholder="AAAA-MM", style=input_style())),
-            field("Desde", rx.input(value=ExpenseState.filter_date_from, on_change=ExpenseState.set_filter_date_from, placeholder="AAAA-MM-DD", style=input_style())),
-            field("Hasta", rx.input(value=ExpenseState.filter_date_to, on_change=ExpenseState.set_filter_date_to, placeholder="AAAA-MM-DD", style=input_style())),
+            field("Mes", rx.select(ExpenseState.month_options, value=ExpenseState.filter_month, on_change=ExpenseState.set_filter_month, placeholder="Todos", style=select_style())),
+            field("Desde", rx.input(value=ExpenseState.filter_date_from, on_change=ExpenseState.set_filter_date_from, placeholder="DD/MM/AAAA", max_length=10, style=input_style())),
+            field("Hasta", rx.input(value=ExpenseState.filter_date_to, on_change=ExpenseState.set_filter_date_to, placeholder="DD/MM/AAAA", max_length=10, style=input_style())),
             field("Motivo", rx.input(value=ExpenseState.filter_motivo, on_change=ExpenseState.set_filter_motivo, style=input_style())),
             field("Marca", rx.input(value=ExpenseState.filter_marca, on_change=ExpenseState.set_filter_marca, style=input_style())),
             field("Lugar", rx.input(value=ExpenseState.filter_lugar, on_change=ExpenseState.set_filter_lugar, style=input_style())),
@@ -877,27 +976,16 @@ def expense_filters() -> rx.Component:
 
 def expenses_page() -> rx.Component:
     return internal_shell(
-        rx.heading("Gastos", size="7", font_family=FONT_STACK, color=GREEN),
-        rx.grid(
-            panel(
-                field("Fecha", rx.input(value=ExpenseState.fecha, on_change=ExpenseState.set_fecha, placeholder="AAAA-MM-DD", style=input_style())),
-                field("Motivo", rx.input(value=ExpenseState.motivo_nombre, on_change=ExpenseState.set_motivo_nombre, style=input_style())),
-                field("Marca", rx.input(value=ExpenseState.marca_nombre, on_change=ExpenseState.set_marca_nombre, style=input_style())),
-                field("Cantidad", rx.input(value=ExpenseState.cantidad, on_change=ExpenseState.set_cantidad, style=input_style())),
-                field("Unidad", rx.input(value=ExpenseState.unidad_medida, on_change=ExpenseState.set_unidad_medida, style=input_style())),
-                field("Precio", rx.input(value=ExpenseState.precio, on_change=ExpenseState.set_precio, style=input_style())),
-                field("Lugar", rx.input(value=ExpenseState.lugar_texto, on_change=ExpenseState.set_lugar_texto, style=input_style())),
-                rx.hstack(
-                    pill_button("Guardar gasto", on_click=ExpenseState.submit_expense, background=RED),
-                    outline_button("Actualizar lista", on_click=ExpenseState.load_expenses),
-                ),
-                rx.text(ExpenseState.message, color=GREEN, font_weight="900"),
-            ),
-            rx.vstack(rx.foreach(ExpenseState.expenses, expense_card), spacing="3", align="stretch"),
-            columns="minmax(280px, 420px) minmax(0, 1fr)",
-            spacing="5",
+        expense_form_modal(),
+        expense_delete_confirm(),
+        rx.hstack(
+            rx.heading("Gastos", size="7", font_family=FONT_STACK, color=GREEN),
+            rx.spacer(),
+            pill_button("Agregar gasto", on_click=ExpenseState.open_new_expense, background=RED),
+            outline_button("Actualizar", on_click=ExpenseState.load_expenses),
             width="100%",
         ),
+        rx.text(ExpenseState.message, color=GREEN, font_weight="900"),
         rx.heading("Analisis de gastos", size="5", font_family=FONT_STACK, color=GREEN),
         expense_filters(),
         rx.grid(
@@ -919,7 +1007,8 @@ def expenses_page() -> rx.Component:
                     table_cell("Unidad", "900"),
                     table_cell("Precio", "900"),
                     table_cell("Lugar", "900"),
-                    columns="130px 130px 180px 180px 110px 100px 120px 220px",
+                    table_cell("Acciones", "900"),
+                    columns="130px 130px 180px 180px 110px 100px 120px 220px 180px",
                     width="max-content",
                     min_width="100%",
                     background="#fff4d9",
@@ -960,7 +1049,7 @@ def admin_category_card(category: rx.Var[dict]) -> rx.Component:
         rx.vstack(
             rx.cond(
                 category["foto"] != "",
-                rx.image(src=category["foto"], width="100%", height="110px", object_fit="cover", border_radius="12px"),
+                rx.image(src=rx.get_upload_url(category["foto"]), width="100%", height="110px", object_fit="cover", border_radius="12px"),
                 food_visual(category["nombre"], "110px"),
             ),
             rx.hstack(
@@ -986,7 +1075,7 @@ def admin_product_card(product: rx.Var[dict]) -> rx.Component:
         rx.vstack(
             rx.cond(
                 product["foto"] != "",
-                rx.image(src=product["foto"], width="100%", height="120px", object_fit="cover", border_radius="12px"),
+                rx.image(src=rx.get_upload_url(product["foto"]), width="100%", height="120px", object_fit="cover", border_radius="12px"),
                 food_visual(product["nombre"], "120px"),
             ),
             rx.hstack(
@@ -1002,7 +1091,11 @@ def admin_product_card(product: rx.Var[dict]) -> rx.Component:
                 rx.text(rx.cond(product["destacado"], "Destacado", ""), color=GOLD, font_weight="900"),
                 width="100%",
             ),
-            outline_button("Editar", on_click=CatalogAdminState.select_product_category(product["id"]), width="100%"),
+            rx.hstack(
+                outline_button("Editar", on_click=CatalogAdminState.select_product_category(product["id"])),
+                pill_button("Quitar", on_click=CatalogAdminState.request_delete_product_category(product["id"]), background=RED),
+                width="100%",
+            ),
             spacing="3",
             align="stretch",
         ),
@@ -1019,6 +1112,7 @@ def upload_box(upload_id: str, label: str, on_click: rx.event.EventSpec) -> rx.C
             rx.vstack(
                 rx.text(label, font_weight="900", color=GREEN),
                 rx.text("Elegir archivo desde la compu", color="#725f45", font_size="0.85rem"),
+                rx.foreach(rx.selected_files(upload_id), lambda file: rx.text(file, color=RED, font_weight="900", font_size="0.82rem")),
                 spacing="1",
                 align="center",
             ),
@@ -1034,8 +1128,90 @@ def upload_box(upload_id: str, label: str, on_click: rx.event.EventSpec) -> rx.C
     )
 
 
+def promo_card(promo: rx.Var[dict]) -> rx.Component:
+    return rx.box(
+        rx.vstack(
+            rx.hstack(
+                rx.text(promo["nombre"], font_weight="900", color=GREEN),
+                rx.spacer(),
+                rx.text(rx.cond(promo["activa"], "Activa", "Inactiva"), color=rx.cond(promo["activa"], GREEN, RED), font_weight="900"),
+                width="100%",
+            ),
+            rx.text(promo["codigo"], color="#725f45", font_weight="800", font_size="0.82rem"),
+            rx.text("Minimo: ", promo["cantidad_minima"], " | Precio: $", promo["precio_display"], color=INK, font_weight="800"),
+            rx.text("Productos: ", promo["productos"], color="#725f45", font_size="0.86rem"),
+            rx.hstack(
+                outline_button("Editar", on_click=CatalogAdminState.select_promo(promo["id"])),
+                pill_button("Borrar", on_click=CatalogAdminState.request_delete_promo(promo["id"]), background=RED),
+            ),
+            spacing="2",
+            align="stretch",
+        ),
+        background="#fffdf5",
+        border="1px solid rgba(23, 46, 29, 0.12)",
+        border_radius="14px",
+        padding="0.85rem",
+    )
+
+
+def catalog_confirmations() -> rx.Component:
+    return rx.fragment(
+        rx.cond(
+            CatalogAdminState.pending_delete_product_category_id != "",
+            rx.box(
+                rx.center(
+                    rx.box(
+                        panel(
+                            rx.heading("Eliminar producto de categoria", size="5", font_family=FONT_STACK, color=GREEN),
+                            rx.text("Estas seguro que quieres eliminar esta relacion?", color="#725f45", font_weight="800"),
+                            rx.hstack(
+                                pill_button("Eliminar", on_click=CatalogAdminState.delete_product_category, background=RED),
+                                outline_button("Cancelar", on_click=CatalogAdminState.cancel_delete_product_category),
+                            ),
+                        ),
+                        width="min(94vw, 450px)",
+                    ),
+                    min_height="100vh",
+                    padding="1rem",
+                ),
+                position="fixed",
+                inset="0",
+                background="rgba(32, 24, 15, 0.42)",
+                z_index="70",
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            CatalogAdminState.pending_delete_promo_id != "",
+            rx.box(
+                rx.center(
+                    rx.box(
+                        panel(
+                            rx.heading("Eliminar promocion", size="5", font_family=FONT_STACK, color=GREEN),
+                            rx.text("Estas seguro que quieres eliminar esta promocion?", color="#725f45", font_weight="800"),
+                            rx.hstack(
+                                pill_button("Eliminar", on_click=CatalogAdminState.delete_promo, background=RED),
+                                outline_button("Cancelar", on_click=CatalogAdminState.cancel_delete_promo),
+                            ),
+                        ),
+                        width="min(94vw, 450px)",
+                    ),
+                    min_height="100vh",
+                    padding="1rem",
+                ),
+                position="fixed",
+                inset="0",
+                background="rgba(32, 24, 15, 0.42)",
+                z_index="70",
+            ),
+            rx.fragment(),
+        ),
+    )
+
+
 def catalog_admin_page() -> rx.Component:
     return internal_shell(
+        catalog_confirmations(),
         rx.hstack(
             rx.heading("Catalogo visual", size="7", font_family=FONT_STACK, color=GREEN),
             rx.spacer(),
@@ -1043,6 +1219,29 @@ def catalog_admin_page() -> rx.Component:
             width="100%",
         ),
         rx.text(CatalogAdminState.message, color=RED, font_weight="900"),
+        panel(
+            rx.heading("Logo", size="5", font_family=FONT_STACK, color=GREEN),
+            rx.hstack(
+                rx.cond(
+                    CatalogAdminState.logo_url != "",
+                    rx.image(src=rx.get_upload_url(CatalogAdminState.logo_url), width="72px", height="72px", object_fit="cover", border_radius="999px"),
+                    logo_mark("72px"),
+                ),
+                rx.vstack(
+                    upload_box(
+                        "logo_upload",
+                        "Logo del negocio",
+                        CatalogAdminState.upload_logo(rx.upload_files(upload_id="logo_upload")),
+                    ),
+                    outline_button("Eliminar logo", on_click=CatalogAdminState.delete_logo),
+                    spacing="2",
+                    align="stretch",
+                    flex="1",
+                ),
+                width="100%",
+                align="center",
+            ),
+        ),
         rx.grid(
             panel(
                 rx.heading("Categorias", size="5", font_family=FONT_STACK, color=GREEN),
@@ -1058,17 +1257,31 @@ def catalog_admin_page() -> rx.Component:
                 field("Nombre", rx.input(value=CatalogAdminState.category_nombre, on_change=CatalogAdminState.set_category_nombre, style=input_style())),
                 field("Descripcion publica", rx.text_area(value=CatalogAdminState.category_descripcion, on_change=CatalogAdminState.set_category_descripcion, style=input_style())),
                 field("Orden", rx.input(value=CatalogAdminState.category_orden, on_change=CatalogAdminState.set_category_orden, type="number", style=input_style())),
+                rx.text("Orden define en que posicion aparece la categoria. Menor numero aparece primero.", color="#725f45", font_size="0.85rem", font_weight="700"),
                 rx.checkbox("Visible para cliente", checked=CatalogAdminState.category_visible, on_change=CatalogAdminState.set_category_visible),
-                rx.hstack(
-                    pill_button("Guardar categoria", on_click=CatalogAdminState.save_category, background=RED),
-                    outline_button("Ver productos", on_click=CatalogAdminState.load_catalog_admin),
-                    wrap="wrap",
+                rx.cond(
+                    CatalogAdminState.pending_save_category,
+                    rx.vstack(
+                        rx.text("Estas seguro que quieres modificar esta categoria?", color=RED, font_weight="900"),
+                        rx.hstack(
+                            pill_button("Confirmar", on_click=CatalogAdminState.save_category, background=RED),
+                            outline_button("Cancelar", on_click=CatalogAdminState.cancel_save_category),
+                        ),
+                        spacing="2",
+                        align="stretch",
+                    ),
+                    rx.hstack(
+                        pill_button("Guardar categoria", on_click=CatalogAdminState.request_save_category, background=RED),
+                        outline_button("Ver productos", on_click=CatalogAdminState.load_catalog_admin),
+                        wrap="wrap",
+                    ),
                 ),
                 upload_box(
                     "category_upload",
                     "Foto de categoria",
                     CatalogAdminState.upload_category_photo(rx.upload_files(upload_id="category_upload")),
                 ),
+                outline_button("Eliminar foto de categoria", on_click=CatalogAdminState.delete_category_photo),
             ),
             columns="minmax(0, 1.3fr) minmax(280px, 0.7fr)",
             spacing="5",
@@ -1077,6 +1290,7 @@ def catalog_admin_page() -> rx.Component:
         rx.grid(
             panel(
                 rx.heading("Productos de la categoria", size="5", font_family=FONT_STACK, color=GREEN),
+                rx.text("Selecciona una categoria arriba para ver y agregar productos.", color="#725f45", font_weight="700"),
                 rx.grid(
                     rx.foreach(CatalogAdminState.products, admin_product_card),
                     columns="repeat(auto-fit, minmax(min(100%, 210px), 1fr))",
@@ -1086,19 +1300,63 @@ def catalog_admin_page() -> rx.Component:
             ),
             panel(
                 rx.heading("Editar producto en categoria", size="5", font_family=FONT_STACK, color=GREEN),
+                field("Producto disponible para agregar", rx.select(CatalogAdminState.available_products, value=CatalogAdminState.selected_available_product_id, on_change=CatalogAdminState.set_selected_available_product_id, placeholder="Elegir producto", style=select_style())),
                 field("Precio", rx.input(value=CatalogAdminState.product_price, on_change=CatalogAdminState.set_product_price, style=input_style())),
                 field("Descripcion contextual", rx.text_area(value=CatalogAdminState.product_description, on_change=CatalogAdminState.set_product_description, style=input_style())),
                 field("Orden", rx.input(value=CatalogAdminState.product_order, on_change=CatalogAdminState.set_product_order, type="number", style=input_style())),
+                rx.text("Orden define en que posicion aparece el producto dentro de esta categoria. Menor numero aparece primero.", color="#725f45", font_size="0.85rem", font_weight="700"),
                 rx.checkbox("Visible", checked=CatalogAdminState.product_visible, on_change=CatalogAdminState.set_product_visible),
                 rx.checkbox("Destacado", checked=CatalogAdminState.product_featured, on_change=CatalogAdminState.set_product_featured),
-                pill_button("Guardar producto", on_click=CatalogAdminState.save_product_category, background=RED),
+                rx.cond(
+                    CatalogAdminState.pending_save_product,
+                    rx.vstack(
+                        rx.text("Estas seguro que quieres modificar este producto?", color=RED, font_weight="900"),
+                        rx.hstack(
+                            pill_button("Confirmar", on_click=CatalogAdminState.save_product_category, background=RED),
+                            outline_button("Cancelar", on_click=CatalogAdminState.cancel_save_product_category),
+                        ),
+                        spacing="2",
+                        align="stretch",
+                    ),
+                    rx.hstack(
+                        pill_button("Agregar a categoria", on_click=CatalogAdminState.add_product_to_category, background=GOLD, color=GREEN),
+                        pill_button("Guardar producto", on_click=CatalogAdminState.request_save_product_category, background=RED),
+                        wrap="wrap",
+                    ),
+                ),
                 upload_box(
                     "product_upload",
                     "Foto del producto en esta categoria",
                     CatalogAdminState.upload_product_photo(rx.upload_files(upload_id="product_upload")),
                 ),
+                outline_button("Eliminar foto del producto", on_click=CatalogAdminState.delete_product_photo),
             ),
             columns="minmax(0, 1.3fr) minmax(280px, 0.7fr)",
+            spacing="5",
+            width="100%",
+        ),
+        rx.grid(
+            panel(
+                rx.hstack(
+                    rx.heading("Promociones", size="5", font_family=FONT_STACK, color=GREEN),
+                    rx.spacer(),
+                    outline_button("Nueva promo", on_click=CatalogAdminState.new_promo),
+                    width="100%",
+                ),
+                rx.vstack(rx.foreach(CatalogAdminState.promotions, promo_card), spacing="2", align="stretch"),
+            ),
+            panel(
+                rx.heading("Editar promo", size="5", font_family=FONT_STACK, color=GREEN),
+                field("Codigo", rx.input(value=CatalogAdminState.promo_codigo, on_change=CatalogAdminState.set_promo_codigo, style=input_style())),
+                field("Nombre", rx.input(value=CatalogAdminState.promo_nombre, on_change=CatalogAdminState.set_promo_nombre, style=input_style())),
+                field("Cantidad minima", rx.input(value=CatalogAdminState.promo_cantidad_minima, on_change=CatalogAdminState.set_promo_cantidad_minima, type="number", style=input_style())),
+                field("Precio unitario promocional", rx.input(value=CatalogAdminState.promo_precio, on_change=CatalogAdminState.set_promo_precio, style=input_style())),
+                field("IDs de productos elegibles", rx.input(value=CatalogAdminState.promo_product_ids, on_change=CatalogAdminState.set_promo_product_ids, placeholder="Ej: 1,2,3", style=input_style())),
+                rx.text("Por ahora ingresa IDs separados por coma. Los IDs se ven en Admin > producto; despues lo convertimos a selector visual.", color="#725f45", font_size="0.85rem", font_weight="700"),
+                rx.checkbox("Activa", checked=CatalogAdminState.promo_activa, on_change=CatalogAdminState.set_promo_activa),
+                pill_button("Guardar promo", on_click=CatalogAdminState.save_promo, background=RED),
+            ),
+            columns="minmax(0, 1.2fr) minmax(280px, 0.8fr)",
             spacing="5",
             width="100%",
         ),

@@ -16,6 +16,7 @@ from sqlmodel import Session, select
 
 from gastroflow.data.database import engine
 from gastroflow.domain.enums import EstadoPedido, FormaPago, RolUsuario
+from gastroflow.domain.enums import TipoPromocion
 from gastroflow.domain.errors import DomainError
 from gastroflow.models import (
     Categoria,
@@ -27,6 +28,8 @@ from gastroflow.models import (
     ProductoCategoria,
     Marca,
     MotivoGasto,
+    Promocion,
+    PromocionProducto,
     UsuarioRead,
     ZonaEnvio,
 )
@@ -43,6 +46,7 @@ from gastroflow.services import (
 
 MONEY_QUANT = Decimal("0.01")
 UPLOAD_ROOT = Path("uploads")
+BRAND_SETTINGS_PATH = Path("uploaded_files") / "brand" / "settings.json"
 STORE_NAME = os.getenv("STORE_NAME", "")
 PIZZERIA_WHATSAPP_PHONE = os.getenv("PIZZERIA_WHATSAPP_PHONE", "")
 TRANSFER_TITULAR = os.getenv("TRANSFER_TITULAR", "")
@@ -97,12 +101,44 @@ def _contains(value: str, filter_value: str) -> bool:
     return not filter_value.strip() or filter_value.strip().lower() in value.lower()
 
 
+def _read_brand_logo_url() -> str:
+    try:
+        data = json.loads(BRAND_SETTINGS_PATH.read_text(encoding="utf-8"))
+        return str(data.get("logo_url") or "")
+    except Exception:
+        return ""
+
+
+def _write_brand_logo_url(url: str) -> None:
+    BRAND_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    BRAND_SETTINGS_PATH.write_text(json.dumps({"logo_url": url}, ensure_ascii=False), encoding="utf-8")
+
+
+def _normalize_upload_path(value: str | None) -> str:
+    if not value:
+        return ""
+    return value.replace("/uploaded_files/", "").lstrip("/")
+
+
 def _parse_delivery_date(value: str) -> date:
     clean = value.strip()
-    if "-" in clean:
+    if "-" in clean and len(clean.split("-")[0]) == 4:
         return date.fromisoformat(clean)
     day, month, year = clean.split("/")
     return date(int(year), int(month), int(day))
+
+
+def _date_text(value: date) -> str:
+    return value.strftime("%d/%m/%Y")
+
+
+def _date_key(value: str) -> str:
+    if not value.strip():
+        return ""
+    try:
+        return _parse_delivery_date(value).isoformat()
+    except Exception:
+        return value.strip()
 
 
 def _mask_date(value: str) -> str:
@@ -175,6 +211,13 @@ class AuthState(rx.State):
         return rx.redirect("/login")
 
 
+class BrandState(rx.State):
+    logo_url: str = _normalize_upload_path(_read_brand_logo_url())
+
+    def load_brand(self) -> None:
+        self.logo_url = _normalize_upload_path(_read_brand_logo_url())
+
+
 class PublicOrderState(rx.State):
     categories: list[dict[str, Any]] = []
     products: list[dict[str, Any]] = []
@@ -231,7 +274,7 @@ class PublicOrderState(rx.State):
                 "codigo": category.codigo,
                 "nombre": category.nombre,
                 "descripcion": category.descripcion_publica or "",
-                "foto": category.foto_url or "",
+                "foto": _normalize_upload_path(category.foto_url),
                 "orden": category.orden,
                 "total": product_count_by_category.get(category.id or 0, 0),
             }
@@ -250,7 +293,7 @@ class PublicOrderState(rx.State):
                     or product.descripcion
                     or "Producto artesanal listo para sumar a tu pedido."
                 ),
-                "foto": product_category.foto_url or ((product.fotos or [""])[0] if product.fotos else ""),
+                "foto": _normalize_upload_path(product_category.foto_url or ((product.fotos or [""])[0] if product.fotos else "")),
                 "orden": product_category.orden,
                 "destacado": product_category.destacado,
             }
@@ -542,6 +585,10 @@ class OperationsState(rx.State):
     filter_client: str = ""
     filter_payment: str = ""
     filter_state: str = ""
+    month_options: list[str] = ["Todos", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+    category_options: list[str] = []
+    payment_options: list[str] = ["Todos", FormaPago.EFECTIVO.value, FormaPago.TRANSFERENCIA.value]
+    state_options: list[str] = ["Todos"] + [state.value for state in EstadoPedido]
     message: str = ""
 
     def load_orders(self) -> None:
@@ -581,7 +628,8 @@ class OperationsState(rx.State):
                 "telefono": cliente.telefono if cliente else "",
                 "estado": pedido.estado.value,
                 "forma_pago": pedido.forma_pago.value,
-                "fecha": pedido.fecha_entrega.isoformat(),
+                "fecha": _date_text(pedido.fecha_entrega),
+                "fecha_key": pedido.fecha_entrega.isoformat(),
                 "mes": pedido.fecha_entrega.strftime("%Y-%m"),
                 "categorias": ", ".join(category_names),
                 "productos": ", ".join(product_names),
@@ -606,22 +654,45 @@ class OperationsState(rx.State):
             "ticket_promedio": _money_text(average),
             "facturacion": _money_text(total),
         }
+        self.category_options = ["Todos"] + sorted(
+            {
+                category
+                for row in rows
+                for category in row["categorias"].split(", ")
+                if category
+            }
+        )
 
     def _matches_order_filters(self, row: dict[str, Any]) -> bool:
-        if self.filter_month.strip() and row["mes"] != self.filter_month.strip():
+        month_numbers = {
+            "Enero": "01", "Febrero": "02", "Marzo": "03", "Abril": "04",
+            "Mayo": "05", "Junio": "06", "Julio": "07", "Agosto": "08",
+            "Septiembre": "09", "Octubre": "10", "Noviembre": "11", "Diciembre": "12",
+        }
+        if self.filter_month.strip() and self.filter_month != "Todos" and row["mes"][5:7] != month_numbers.get(self.filter_month, ""):
             return False
-        if self.filter_date_from.strip() and row["fecha"] < self.filter_date_from.strip():
+        if self.filter_date_from.strip() and row["fecha_key"] < _date_key(self.filter_date_from):
             return False
-        if self.filter_date_to.strip() and row["fecha"] > self.filter_date_to.strip():
+        if self.filter_date_to.strip() and row["fecha_key"] > _date_key(self.filter_date_to):
             return False
-        if self.filter_payment.strip() and row["forma_pago"] != self.filter_payment.strip():
+        if self.filter_payment.strip() and self.filter_payment != "Todos" and row["forma_pago"] != self.filter_payment.strip():
             return False
-        if self.filter_state.strip() and row["estado"] != self.filter_state.strip():
+        if self.filter_state.strip() and self.filter_state != "Todos" and row["estado"] != self.filter_state.strip():
             return False
         return (
-            _contains(row["categorias"], self.filter_category)
+            (
+                not self.filter_category.strip()
+                or self.filter_category == "Todos"
+                or self.filter_category in row["categorias"].split(", ")
+            )
             and _contains(row["cliente"], self.filter_client)
         )
+
+    def set_filter_date_from(self, value: str) -> None:
+        self.filter_date_from = _mask_date(value)
+
+    def set_filter_date_to(self, value: str) -> None:
+        self.filter_date_to = _mask_date(value)
 
     def clear_order_filters(self) -> None:
         self.filter_month = ""
@@ -671,6 +742,7 @@ class OperationsState(rx.State):
 
 
 class ExpenseState(rx.State):
+    editing_expense_id: str = ""
     fecha: str = ""
     motivo_nombre: str = ""
     marca_nombre: str = ""
@@ -692,6 +764,10 @@ class ExpenseState(rx.State):
     filter_motivo: str = ""
     filter_marca: str = ""
     filter_lugar: str = ""
+    month_options: list[str] = OperationsState.month_options
+    show_form: bool = False
+    pending_delete_id: str = ""
+    pending_save: bool = False
 
     def load_expenses(self) -> None:
         with Session(engine) as session:
@@ -701,8 +777,10 @@ class ExpenseState(rx.State):
 
         rows = [
             {
+                "id": gasto.id,
                 "codigo": gasto.codigo,
-                "fecha": gasto.fecha.isoformat(),
+                "fecha": _date_text(gasto.fecha),
+                "fecha_key": gasto.fecha.isoformat(),
                 "mes": gasto.fecha.strftime("%Y-%m"),
                 "motivo": motivos[gasto.motivo_gasto_id].nombre if gasto.motivo_gasto_id in motivos else "",
                 "marca": marcas[gasto.marca_id].nombre if gasto.marca_id in marcas else "",
@@ -726,11 +804,16 @@ class ExpenseState(rx.State):
         }
 
     def _matches_expense_filters(self, row: dict[str, Any]) -> bool:
-        if self.filter_month.strip() and row["mes"] != self.filter_month.strip():
+        month_numbers = {
+            "Enero": "01", "Febrero": "02", "Marzo": "03", "Abril": "04",
+            "Mayo": "05", "Junio": "06", "Julio": "07", "Agosto": "08",
+            "Septiembre": "09", "Octubre": "10", "Noviembre": "11", "Diciembre": "12",
+        }
+        if self.filter_month.strip() and self.filter_month != "Todos" and row["mes"][5:7] != month_numbers.get(self.filter_month, ""):
             return False
-        if self.filter_date_from.strip() and row["fecha"] < self.filter_date_from.strip():
+        if self.filter_date_from.strip() and row["fecha_key"] < _date_key(self.filter_date_from):
             return False
-        if self.filter_date_to.strip() and row["fecha"] > self.filter_date_to.strip():
+        if self.filter_date_to.strip() and row["fecha_key"] > _date_key(self.filter_date_to):
             return False
         return (
             _contains(row["motivo"], self.filter_motivo)
@@ -746,6 +829,58 @@ class ExpenseState(rx.State):
         self.filter_marca = ""
         self.filter_lugar = ""
         self.load_expenses()
+
+    def set_fecha(self, value: str) -> None:
+        self.fecha = _mask_date(value)
+
+    def set_filter_date_from(self, value: str) -> None:
+        self.filter_date_from = _mask_date(value)
+
+    def set_filter_date_to(self, value: str) -> None:
+        self.filter_date_to = _mask_date(value)
+
+    def open_new_expense(self) -> None:
+        self.editing_expense_id = ""
+        self.fecha = ""
+        self.motivo_nombre = ""
+        self.marca_nombre = ""
+        self.cantidad = "1"
+        self.unidad_medida = "kg"
+        self.precio = "0"
+        self.lugar_texto = ""
+        self.show_form = True
+        self.message = ""
+
+    def open_edit_expense(self, expense_id: int) -> None:
+        selected = next((row for row in self.expense_rows if str(row["id"]) == str(expense_id)), None)
+        if selected is None:
+            self.message = "Gasto inexistente."
+            return
+        self.editing_expense_id = str(expense_id)
+        self.fecha = selected["fecha"]
+        self.motivo_nombre = selected["motivo"]
+        self.marca_nombre = selected["marca"]
+        self.cantidad = selected["cantidad"]
+        self.unidad_medida = selected["unidad"]
+        self.precio = selected["precio"]
+        self.lugar_texto = selected["lugar"]
+        self.show_form = True
+
+    def close_form(self) -> None:
+        self.show_form = False
+        self.pending_save = False
+
+    def request_save_expense(self) -> None:
+        self.pending_save = True
+
+    def cancel_save_expense(self) -> None:
+        self.pending_save = False
+
+    def request_delete_expense(self, expense_id: int) -> None:
+        self.pending_delete_id = str(expense_id)
+
+    def cancel_delete_expense(self) -> None:
+        self.pending_delete_id = ""
 
     def export_expenses_xlsx(self) -> rx.event.EventSpec:
         export_rows = [
@@ -763,34 +898,83 @@ class ExpenseState(rx.State):
         ]
         return _xlsx_download(export_rows, "gastos_filtrados.xlsx")
 
-    async def submit_expense(self) -> None:
+    async def submit_expense(self) -> rx.event.EventSpec | None:
         auth = await self.get_state(AuthState)
         if not auth.user_id:
             self.message = "Inicia sesion para cargar gastos."
-            return
+            return None
         try:
-            payload = ExpenseInput(
-                fecha=date.fromisoformat(self.fecha),
-                motivo_nombre=self.motivo_nombre,
-                marca_nombre=self.marca_nombre,
-                cantidad=Decimal(self.cantidad),
-                unidad_medida=self.unidad_medida,
-                precio=Decimal(self.precio),
-                lugar_texto=self.lugar_texto,
-            )
+            expense_date = _parse_delivery_date(self.fecha)
             with Session(engine) as session:
-                gasto = ExpenseService(session).create_expense(payload, auth.current_user())
-            self.message = f"Gasto {gasto.codigo} creado."
+                if self.editing_expense_id:
+                    gasto = session.get(Gasto, int(self.editing_expense_id))
+                    if gasto is None:
+                        raise ValueError("Gasto inexistente.")
+                    motivo = ExpenseService(session)._get_or_create_motivo(self.motivo_nombre)
+                    marca = ExpenseService(session)._get_or_create_marca(self.marca_nombre)
+                    gasto.fecha = expense_date
+                    gasto.motivo_gasto_id = motivo.id or 0
+                    gasto.marca_id = marca.id or 0
+                    gasto.cantidad = Decimal(self.cantidad)
+                    gasto.unidad_medida = self.unidad_medida.strip()
+                    gasto.precio = Decimal(self.precio).quantize(MONEY_QUANT)
+                    gasto.lugar_texto = self.lugar_texto.strip()
+                    session.add(gasto)
+                    session.commit()
+                    message = f"Gasto {gasto.codigo} modificado."
+                else:
+                    payload = ExpenseInput(
+                        fecha=expense_date,
+                        motivo_nombre=self.motivo_nombre,
+                        marca_nombre=self.marca_nombre,
+                        cantidad=Decimal(self.cantidad),
+                        unidad_medida=self.unidad_medida,
+                        precio=Decimal(self.precio),
+                        lugar_texto=self.lugar_texto,
+                    )
+                    gasto_read = ExpenseService(session).create_expense(payload, auth.current_user())
+                    message = f"Gasto {gasto_read.codigo} agregado."
+            self.message = message
+            self.show_form = False
+            self.pending_save = False
             self.load_expenses()
+            return rx.toast.success(message)
         except Exception as exc:
             self.message = str(exc)
+            self.pending_save = False
+            return rx.toast.error(str(exc))
+
+    async def delete_expense(self) -> rx.event.EventSpec | None:
+        auth = await self.get_state(AuthState)
+        if not auth.user_id:
+            self.message = "Inicia sesion para borrar gastos."
+            return None
+        try:
+            with Session(engine) as session:
+                gasto = session.get(Gasto, int(self.pending_delete_id))
+                if gasto is None:
+                    raise ValueError("Gasto inexistente.")
+                code = gasto.codigo
+                session.delete(gasto)
+                session.commit()
+            self.pending_delete_id = ""
+            self.message = f"Gasto {code} eliminado."
+            self.load_expenses()
+            return rx.toast.success(f"Gasto {code} eliminado.")
+        except Exception as exc:
+            self.message = str(exc)
+            self.pending_delete_id = ""
+            return rx.toast.error(str(exc))
 
 
 class CatalogAdminState(rx.State):
     categories: list[dict[str, Any]] = []
     products: list[dict[str, Any]] = []
+    available_products: list[str] = []
+    promotions: list[dict[str, Any]] = []
     selected_category_id: str = ""
     selected_product_category_id: str = ""
+    selected_available_product_id: str = ""
     category_nombre: str = ""
     category_descripcion: str = ""
     category_orden: str = "0"
@@ -800,6 +984,18 @@ class CatalogAdminState(rx.State):
     product_order: str = "0"
     product_visible: bool = True
     product_featured: bool = False
+    promo_id: str = ""
+    promo_codigo: str = ""
+    promo_nombre: str = ""
+    promo_cantidad_minima: str = "2"
+    promo_precio: str = "0"
+    promo_activa: bool = True
+    promo_product_ids: str = ""
+    pending_delete_product_category_id: str = ""
+    pending_delete_promo_id: str = ""
+    pending_save_category: bool = False
+    pending_save_product: bool = False
+    logo_url: str = _normalize_upload_path(_read_brand_logo_url())
     message: str = ""
 
     async def load_catalog_admin(self) -> None:
@@ -814,6 +1010,8 @@ class CatalogAdminState(rx.State):
             categories = session.exec(select(Categoria)).all()
             product_categories = session.exec(select(ProductoCategoria)).all()
             products = {product.id: product for product in session.exec(select(Producto)).all()}
+            promotions = session.exec(select(Promocion)).all()
+            promotion_links = session.exec(select(PromocionProducto)).all()
 
         counts: dict[int, int] = {}
         for product_category in product_categories:
@@ -825,7 +1023,7 @@ class CatalogAdminState(rx.State):
                 "codigo": category.codigo,
                 "nombre": category.nombre,
                 "descripcion": category.descripcion_publica or "",
-                "foto": category.foto_url or "",
+                "foto": _normalize_upload_path(category.foto_url),
                 "orden": str(category.orden),
                 "visible": category.visible_cliente,
                 "automatica": category.es_automatica,
@@ -844,7 +1042,7 @@ class CatalogAdminState(rx.State):
                 "precio": str(product_category.precio),
                 "precio_display": _money_text(product_category.precio),
                 "descripcion": product_category.descripcion_publica or product.descripcion or "",
-                "foto": product_category.foto_url or "",
+                "foto": _normalize_upload_path(product_category.foto_url),
                 "visible": product_category.visible,
                 "orden": str(product_category.orden),
                 "destacado": product_category.destacado,
@@ -854,6 +1052,34 @@ class CatalogAdminState(rx.State):
             if (not selected_category or product_category.categoria_id == selected_category)
             and (product := products.get(product_category.producto_id)) is not None
         ]
+        linked_product_ids = {
+            product_category.producto_id
+            for product_category in product_categories
+            if selected_category and product_category.categoria_id == selected_category
+        }
+        self.available_products = [
+            f"{product.id} - {product.nombre} ({product.codigo})"
+            for product in sorted(products.values(), key=lambda item: item.nombre)
+            if product.activo and product.id not in linked_product_ids
+        ]
+        product_names = {product_id: product.nombre for product_id, product in products.items()}
+        links_by_promo: dict[int, list[str]] = {}
+        for link in promotion_links:
+            links_by_promo.setdefault(link.promocion_id, []).append(product_names.get(link.producto_id, str(link.producto_id)))
+        self.promotions = [
+            {
+                "id": promo.id,
+                "codigo": promo.codigo,
+                "nombre": promo.nombre,
+                "cantidad_minima": str(promo.cantidad_minima),
+                "precio": str(promo.precio_unitario_promocional),
+                "precio_display": _money_text(promo.precio_unitario_promocional),
+                "activa": promo.activa,
+                "productos": ", ".join(links_by_promo.get(promo.id or 0, [])),
+            }
+            for promo in sorted(promotions, key=lambda item: item.codigo)
+        ]
+        self.logo_url = _normalize_upload_path(_read_brand_logo_url())
 
     def select_category(self, category_id: int) -> None:
         self.selected_category_id = str(category_id)
@@ -896,10 +1122,20 @@ class CatalogAdminState(rx.State):
                 category.visible_cliente = self.category_visible
                 session.add(category)
                 session.commit()
-            self.message = "Categoria actualizada."
+            self.message = "Categoria modificada."
+            self.pending_save_category = False
             self._load_catalog_data()
+            return rx.toast.success("Categoria modificada.")
         except Exception as exc:
+            self.pending_save_category = False
             self.message = str(exc)
+            return rx.toast.error(str(exc))
+
+    def request_save_category(self) -> None:
+        self.pending_save_category = True
+
+    def cancel_save_category(self) -> None:
+        self.pending_save_category = False
 
     async def save_product_category(self) -> None:
         auth = await self.get_state(AuthState)
@@ -922,9 +1158,87 @@ class CatalogAdminState(rx.State):
                 session.add(product_category)
                 session.commit()
             self.message = "Producto actualizado."
+            self.pending_save_product = False
             self._load_catalog_data()
+            return rx.toast.success("Producto modificado.")
+        except Exception as exc:
+            self.pending_save_product = False
+            self.message = str(exc)
+            return rx.toast.error(str(exc))
+
+    def request_save_product_category(self) -> None:
+        self.pending_save_product = True
+
+    def cancel_save_product_category(self) -> None:
+        self.pending_save_product = False
+
+    async def add_product_to_category(self) -> rx.event.EventSpec | None:
+        auth = await self.get_state(AuthState)
+        if auth.role != RolUsuario.ADMIN.value:
+            self.message = "Solo Admin puede editar catalogo."
+            return None
+        if not self.selected_category_id or not self.selected_available_product_id:
+            self.message = "Selecciona categoria y producto."
+            return rx.toast.warning(self.message)
+        try:
+            product_id = int(self.selected_available_product_id.split(" - ", 1)[0])
+            with Session(engine) as session:
+                existing = session.exec(
+                    select(ProductoCategoria).where(
+                        ProductoCategoria.producto_id == product_id,
+                        ProductoCategoria.categoria_id == int(self.selected_category_id),
+                    )
+                ).first()
+                if existing is not None:
+                    raise ValueError("Ese producto ya esta en la categoria.")
+                relation = ProductoCategoria(
+                    producto_id=product_id,
+                    categoria_id=int(self.selected_category_id),
+                    precio=Decimal(self.product_price or "0").quantize(MONEY_QUANT),
+                    descripcion_publica=self.product_description.strip() or None,
+                    foto_url=None,
+                    visible=self.product_visible,
+                    orden=int(self.product_order or "0"),
+                    destacado=self.product_featured,
+                    activo=True,
+                )
+                session.add(relation)
+                session.commit()
+            self.message = "Producto agregado a la categoria."
+            self.selected_available_product_id = ""
+            self._load_catalog_data()
+            return rx.toast.success("Producto agregado a la categoria.")
         except Exception as exc:
             self.message = str(exc)
+            return rx.toast.error(str(exc))
+
+    def request_delete_product_category(self, product_category_id: int) -> None:
+        self.pending_delete_product_category_id = str(product_category_id)
+
+    def cancel_delete_product_category(self) -> None:
+        self.pending_delete_product_category_id = ""
+
+    async def delete_product_category(self) -> rx.event.EventSpec | None:
+        auth = await self.get_state(AuthState)
+        if auth.role != RolUsuario.ADMIN.value:
+            self.message = "Solo Admin puede editar catalogo."
+            return None
+        try:
+            with Session(engine) as session:
+                relation = session.get(ProductoCategoria, int(self.pending_delete_product_category_id))
+                if relation is None:
+                    raise ValueError("Relacion inexistente.")
+                session.delete(relation)
+                session.commit()
+            self.pending_delete_product_category_id = ""
+            self.selected_product_category_id = ""
+            self.message = "Producto eliminado de la categoria."
+            self._load_catalog_data()
+            return rx.toast.success("Producto eliminado de la categoria.")
+        except Exception as exc:
+            self.pending_delete_product_category_id = ""
+            self.message = str(exc)
+            return rx.toast.error(str(exc))
 
     async def upload_category_photo(self, files: list[rx.UploadFile]) -> None:
         auth = await self.get_state(AuthState)
@@ -942,6 +1256,7 @@ class CatalogAdminState(rx.State):
                 session.commit()
         self.message = "Foto de categoria actualizada."
         self._load_catalog_data()
+        return rx.toast.success("Foto de categoria actualizada.")
 
     async def upload_product_photo(self, files: list[rx.UploadFile]) -> None:
         auth = await self.get_state(AuthState)
@@ -959,6 +1274,157 @@ class CatalogAdminState(rx.State):
                 session.commit()
         self.message = "Foto del producto actualizada."
         self._load_catalog_data()
+        return rx.toast.success("Foto del producto actualizada.")
+
+    async def upload_logo(self, files: list[rx.UploadFile]) -> rx.event.EventSpec | None:
+        auth = await self.get_state(AuthState)
+        if auth.role != RolUsuario.ADMIN.value:
+            self.message = "Solo Admin puede editar el logo."
+            return None
+        if not files:
+            return None
+        relative_path = await self._save_upload(files[0], "brand")
+        _write_brand_logo_url(relative_path)
+        brand = await self.get_state(BrandState)
+        brand.load_brand()
+        self.logo_url = relative_path
+        self.message = "Logo actualizado."
+        return rx.toast.success("Logo actualizado.")
+
+    async def delete_category_photo(self) -> rx.event.EventSpec | None:
+        if not self.selected_category_id:
+            return None
+        with Session(engine) as session:
+            category = session.get(Categoria, int(self.selected_category_id))
+            if category is not None:
+                category.foto_url = None
+                session.add(category)
+                session.commit()
+        self._load_catalog_data()
+        self.message = "Foto de categoria eliminada."
+        return rx.toast.success("Foto de categoria eliminada.")
+
+    async def delete_product_photo(self) -> rx.event.EventSpec | None:
+        if not self.selected_product_category_id:
+            return None
+        with Session(engine) as session:
+            relation = session.get(ProductoCategoria, int(self.selected_product_category_id))
+            if relation is not None:
+                relation.foto_url = None
+                session.add(relation)
+                session.commit()
+        self._load_catalog_data()
+        self.message = "Foto de producto eliminada."
+        return rx.toast.success("Foto de producto eliminada.")
+
+    async def delete_logo(self) -> rx.event.EventSpec:
+        _write_brand_logo_url("")
+        brand = await self.get_state(BrandState)
+        brand.load_brand()
+        self.logo_url = ""
+        self.message = "Logo eliminado."
+        return rx.toast.success("Logo eliminado.")
+
+    def new_promo(self) -> None:
+        self.promo_id = ""
+        self.promo_codigo = ""
+        self.promo_nombre = ""
+        self.promo_cantidad_minima = "2"
+        self.promo_precio = "0"
+        self.promo_activa = True
+        self.promo_product_ids = ""
+
+    def select_promo(self, promo_id: int) -> None:
+        selected = next((promo for promo in self.promotions if str(promo["id"]) == str(promo_id)), None)
+        if selected is None:
+            return
+        self.promo_id = str(promo_id)
+        self.promo_codigo = selected["codigo"]
+        self.promo_nombre = selected["nombre"]
+        self.promo_cantidad_minima = selected["cantidad_minima"]
+        self.promo_precio = selected["precio"]
+        self.promo_activa = bool(selected["activa"])
+        with Session(engine) as session:
+            links = session.exec(select(PromocionProducto).where(PromocionProducto.promocion_id == promo_id)).all()
+        self.promo_product_ids = ",".join(str(link.producto_id) for link in links)
+
+    async def save_promo(self) -> rx.event.EventSpec | None:
+        auth = await self.get_state(AuthState)
+        if auth.role != RolUsuario.ADMIN.value:
+            self.message = "Solo Admin puede editar promociones."
+            return None
+        try:
+            product_ids = [
+                int(value.strip())
+                for value in self.promo_product_ids.split(",")
+                if value.strip()
+            ]
+            with Session(engine) as session:
+                if self.promo_id:
+                    promo = session.get(Promocion, int(self.promo_id))
+                    if promo is None:
+                        raise ValueError("Promocion inexistente.")
+                    action = "modificada"
+                else:
+                    promo = Promocion(
+                        codigo=self.promo_codigo.strip(),
+                        nombre=self.promo_nombre.strip(),
+                        tipo=TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
+                        cantidad_minima=int(self.promo_cantidad_minima),
+                        precio_unitario_promocional=Decimal(self.promo_precio).quantize(MONEY_QUANT),
+                        activa=self.promo_activa,
+                    )
+                    session.add(promo)
+                    session.flush()
+                    action = "agregada"
+                promo.codigo = self.promo_codigo.strip()
+                promo.nombre = self.promo_nombre.strip()
+                promo.cantidad_minima = int(self.promo_cantidad_minima)
+                promo.precio_unitario_promocional = Decimal(self.promo_precio).quantize(MONEY_QUANT)
+                promo.activa = self.promo_activa
+                session.add(promo)
+                session.flush()
+                for link in session.exec(select(PromocionProducto).where(PromocionProducto.promocion_id == promo.id)).all():
+                    session.delete(link)
+                for product_id in product_ids:
+                    session.add(PromocionProducto(promocion_id=promo.id or 0, producto_id=product_id))
+                session.commit()
+            self.message = f"Promocion {action}."
+            self.new_promo()
+            self._load_catalog_data()
+            return rx.toast.success(self.message)
+        except Exception as exc:
+            self.message = str(exc)
+            return rx.toast.error(str(exc))
+
+    def request_delete_promo(self, promo_id: int) -> None:
+        self.pending_delete_promo_id = str(promo_id)
+
+    def cancel_delete_promo(self) -> None:
+        self.pending_delete_promo_id = ""
+
+    async def delete_promo(self) -> rx.event.EventSpec | None:
+        auth = await self.get_state(AuthState)
+        if auth.role != RolUsuario.ADMIN.value:
+            self.message = "Solo Admin puede editar promociones."
+            return None
+        try:
+            with Session(engine) as session:
+                promo = session.get(Promocion, int(self.pending_delete_promo_id))
+                if promo is None:
+                    raise ValueError("Promocion inexistente.")
+                for link in session.exec(select(PromocionProducto).where(PromocionProducto.promocion_id == promo.id)).all():
+                    session.delete(link)
+                session.delete(promo)
+                session.commit()
+            self.pending_delete_promo_id = ""
+            self.message = "Promocion eliminada."
+            self._load_catalog_data()
+            return rx.toast.success("Promocion eliminada.")
+        except Exception as exc:
+            self.pending_delete_promo_id = ""
+            self.message = str(exc)
+            return rx.toast.error(str(exc))
 
     async def _save_upload(self, file: rx.UploadFile, folder: str) -> str:
         upload_dir = Path(rx.get_upload_dir()) / folder
@@ -968,7 +1434,7 @@ class CatalogAdminState(rx.State):
         path = upload_dir / filename
         content = await file.read()
         path.write_bytes(content)
-        return f"/uploaded_files/{folder}/{filename}"
+        return f"{folder}/{filename}"
 
 
 class AdminCrudState(rx.State):
