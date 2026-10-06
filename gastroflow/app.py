@@ -210,12 +210,6 @@ def category_card(category: rx.Var[dict]) -> rx.Component:
                 rx.image(src=rx.get_upload_url(category["foto"]), width="100%", height="112px", object_fit="cover", border_radius="14px"),
                 food_visual(category["nombre"], "112px"),
             ),
-            rx.hstack(
-                rx.box(width="0.75rem", height="2.4rem", border_radius="999px", background=RED),
-                rx.spacer(),
-                width="100%",
-                align="center",
-            ),
             rx.text(category["nombre"], font_family=FONT_STACK, font_size="1.4rem", color=GREEN, font_weight="900"),
             rx.cond(category["descripcion"] != "", rx.text(category["descripcion"], color="#725f45", font_size="0.92rem"), rx.fragment()),
             rx.text(category["total"], " productos", color="#725f45", font_weight="700"),
@@ -623,16 +617,32 @@ def internal_nav() -> rx.Component:
             rx.link("Catalogo", href="/catalogo-admin", style=link_style),
             rx.link("Promos", href="/promociones", style=link_style),
             rx.link("Admin", href="/admin", style=link_style),
-            rx.button(
-                rx.hstack(rx.icon("log-out", size=16), rx.text("Salir"), spacing="2", align="center"),
-                on_click=AuthState.logout,
-                border_radius="999px",
-                padding="0.65rem 0.95rem",
-                background=RED,
-                color="#fff8e5",
-                border="1px solid rgba(169, 15, 43, 0.25)",
-                font_weight="900",
-                cursor="pointer",
+            rx.cond(
+                AuthState.is_authenticated,
+                rx.button(
+                    rx.hstack(rx.icon("log-out", size=16), rx.text("Salir"), spacing="2", align="center"),
+                    on_click=AuthState.logout,
+                    border_radius="999px",
+                    padding="0.65rem 0.95rem",
+                    background=RED,
+                    color="#fff8e5",
+                    border="1px solid rgba(169, 15, 43, 0.25)",
+                    font_weight="900",
+                    cursor="pointer",
+                ),
+                rx.link(
+                    rx.button(
+                        rx.hstack(rx.icon("log-in", size=16), rx.text("Ingresar"), spacing="2", align="center"),
+                        border_radius="999px",
+                        padding="0.65rem 0.95rem",
+                        background=GREEN,
+                        color=CREAM,
+                        border="1px solid rgba(23, 46, 29, 0.20)",
+                        font_weight="900",
+                        cursor="pointer",
+                    ),
+                    href="/login",
+                ),
             ),
             width="100%",
             max_width="1180px",
@@ -662,6 +672,47 @@ def internal_shell(*children: rx.Component) -> rx.Component:
     )
 
 
+def technical_error_details(
+    message: rx.Var[str] | str,
+    technical_error: rx.Var[str] | str,
+    show_technical_error: rx.Var[bool],
+    toggle_event: rx.event.EventSpec,
+) -> rx.Component:
+    return rx.cond(
+        message != "",
+        rx.vstack(
+            rx.text(message, color=RED, font_weight="900"),
+            rx.cond(
+                technical_error != "",
+                rx.vstack(
+                    outline_button("Ver detalle tecnico", on_click=toggle_event),
+                    rx.cond(
+                        show_technical_error,
+                        rx.box(
+                            rx.text(technical_error, font_family="monospace", font_size="0.78rem", color="#5a4b38"),
+                            width="100%",
+                            padding="0.75rem",
+                            background="#fff4d9",
+                            border="1px solid rgba(23, 46, 29, 0.10)",
+                            border_radius="12px",
+                            overflow_x="auto",
+                        ),
+                        rx.fragment(),
+                    ),
+                    spacing="2",
+                    align="stretch",
+                    width="100%",
+                ),
+                rx.fragment(),
+            ),
+            spacing="2",
+            align="stretch",
+            width="100%",
+        ),
+        rx.fragment(),
+    )
+
+
 def login_page() -> rx.Component:
     return page_bg(
         rx.center(
@@ -672,16 +723,40 @@ def login_page() -> rx.Component:
                     field("Usuario", rx.input(value=AuthState.username, on_change=AuthState.set_username, size="3", style=input_style())),
                     field(
                         "Password",
-                        rx.input(
-                            value=AuthState.password,
-                            on_change=AuthState.set_password,
-                            type="password",
-                            size="3",
-                            style=input_style(),
+                        rx.hstack(
+                            rx.input(
+                                value=AuthState.password,
+                                on_change=AuthState.set_password,
+                                type=rx.cond(AuthState.show_password, "text", "password"),
+                                size="3",
+                                style=input_style(),
+                                flex="1",
+                            ),
+                            rx.button(
+                                rx.cond(
+                                    AuthState.show_password,
+                                    rx.icon("eye-off", size=18),
+                                    rx.icon("eye", size=18),
+                                ),
+                                on_click=AuthState.toggle_password_visibility,
+                                border_radius="12px",
+                                background="#fffdf5",
+                                color=GREEN,
+                                border="1px solid rgba(23, 46, 29, 0.18)",
+                                height="2.5rem",
+                                width="2.8rem",
+                                cursor="pointer",
+                            ),
+                            width="100%",
                         ),
                     ),
                     pill_button("Ingresar", on_click=AuthState.login, size="3", background=RED, width="100%"),
-                    rx.text(AuthState.message, color=RED, font_weight="900"),
+                    technical_error_details(
+                        AuthState.message,
+                        AuthState.technical_error,
+                        AuthState.show_technical_error,
+                        AuthState.toggle_technical_error,
+                    ),
                 ),
                 width="100%",
                 max_width="430px",
@@ -1167,6 +1242,11 @@ def promo_card(promo: rx.Var[dict]) -> rx.Component:
             ),
             rx.text(promo["codigo"], color="#725f45", font_weight="800", font_size="0.82rem"),
             rx.text("Minimo: ", promo["cantidad_minima"], " | Precio: $", promo["precio_display"], color=INK, font_weight="800"),
+            rx.cond(
+                promo["precio_total_display"] != "",
+                rx.text("Total paquete: $", promo["precio_total_display"], color=RED, font_weight="900", font_size="0.86rem"),
+                rx.fragment(),
+            ),
             rx.text("Productos: ", promo["productos"], color="#725f45", font_size="0.86rem"),
             rx.hstack(
                 outline_button("Editar", on_click=CatalogAdminState.select_promo(promo["id"])),
@@ -1184,6 +1264,31 @@ def promo_card(promo: rx.Var[dict]) -> rx.Component:
 
 def catalog_confirmations() -> rx.Component:
     return rx.fragment(
+        rx.cond(
+            CatalogAdminState.pending_delete_category_id != "",
+            rx.box(
+                rx.center(
+                    rx.box(
+                        panel(
+                            rx.heading("Eliminar categoria", size="5", font_family=FONT_STACK, color=GREEN),
+                            rx.text("Estas seguro que quieres eliminar esta categoria?", color="#725f45", font_weight="800"),
+                            rx.hstack(
+                                pill_button("Eliminar", on_click=CatalogAdminState.delete_category, background=RED),
+                                outline_button("Cancelar", on_click=CatalogAdminState.cancel_delete_category),
+                            ),
+                        ),
+                        width="min(94vw, 450px)",
+                    ),
+                    min_height="100vh",
+                    padding="1rem",
+                ),
+                position="fixed",
+                inset="0",
+                background="rgba(32, 24, 15, 0.42)",
+                z_index="70",
+            ),
+            rx.fragment(),
+        ),
         rx.cond(
             CatalogAdminState.pending_delete_product_category_id != "",
             rx.box(
@@ -1246,7 +1351,12 @@ def catalog_admin_page() -> rx.Component:
             pill_button("Actualizar", on_click=CatalogAdminState.load_catalog_admin),
             width="100%",
         ),
-        rx.text(CatalogAdminState.message, color=RED, font_weight="900"),
+        technical_error_details(
+            CatalogAdminState.message,
+            CatalogAdminState.technical_error,
+            CatalogAdminState.show_technical_error,
+            CatalogAdminState.toggle_technical_error,
+        ),
         panel(
             rx.heading("Logo", size="5", font_family=FONT_STACK, color=GREEN),
             rx.hstack(
@@ -1301,6 +1411,7 @@ def catalog_admin_page() -> rx.Component:
                     rx.hstack(
                         pill_button("Guardar categoria", on_click=CatalogAdminState.request_save_category, background=RED),
                         outline_button("Ver productos", on_click=rx.scroll_to("productos-categoria")),
+                        pill_button("Quitar categoria", on_click=CatalogAdminState.request_delete_category, background=RED),
                         wrap="wrap",
                     ),
                 ),
@@ -1391,7 +1502,12 @@ def promotions_page() -> rx.Component:
             width="100%",
             wrap="wrap",
         ),
-        rx.text(CatalogAdminState.message, color=RED, font_weight="900"),
+        technical_error_details(
+            CatalogAdminState.message,
+            CatalogAdminState.technical_error,
+            CatalogAdminState.show_technical_error,
+            CatalogAdminState.toggle_technical_error,
+        ),
         rx.grid(
             panel(
                 rx.heading("Promos cargadas", size="5", font_family=FONT_STACK, color=GREEN),
@@ -1403,10 +1519,11 @@ def promotions_page() -> rx.Component:
                 field("Nombre", rx.input(value=CatalogAdminState.promo_nombre, on_change=CatalogAdminState.set_promo_nombre, placeholder="2 MUZZAS", style=input_style(), _placeholder=placeholder_style())),
                 field("Cantidad minima", rx.input(value=CatalogAdminState.promo_cantidad_minima, on_change=CatalogAdminState.set_promo_cantidad_minima, type="number", style=input_style())),
                 field("Precio unitario promocional", rx.input(value=CatalogAdminState.promo_precio, on_change=CatalogAdminState.set_promo_precio, placeholder="$8.500", style=input_style(), _placeholder=placeholder_style())),
+                field("Precio total del paquete", rx.input(value=CatalogAdminState.promo_precio_total, on_change=CatalogAdminState.set_promo_precio_total, placeholder="Opcional: 3500 para 3 unidades", style=input_style(), _placeholder=placeholder_style())),
                 field(
                     "Producto elegible",
                     rx.hstack(
-                        rx.select(CatalogAdminState.promo_product_options, value=CatalogAdminState.promo_selected_product, on_change=CatalogAdminState.set_promo_selected_product, placeholder="Elegir producto", style=select_style()),
+                        rx.select(CatalogAdminState.promo_available_product_options, value=CatalogAdminState.promo_selected_product, on_change=CatalogAdminState.set_promo_selected_product, placeholder="Elegir producto", style=select_style()),
                         pill_button("Agregar", on_click=CatalogAdminState.add_selected_promo_product, background=GOLD, color=GREEN),
                         width="100%",
                         align="end",
@@ -1455,7 +1572,7 @@ def admin_page() -> rx.Component:
 
 app = rx.App()
 app.add_page(public_page, route="/", on_load=PublicOrderState.load_catalog)
-app.add_page(login_page, route="/login")
+app.add_page(login_page, route="/login", on_load=AuthState.clear_message)
 app.add_page(orders_page, route="/pedidos", on_load=OperationsState.load_orders)
 app.add_page(expenses_page, route="/gastos", on_load=ExpenseState.load_expenses)
 app.add_page(catalog_admin_page, route="/catalogo-admin", on_load=CatalogAdminState.load_catalog_admin)

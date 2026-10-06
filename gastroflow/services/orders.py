@@ -39,6 +39,7 @@ class OrderItemInput:
     producto_id: int
     cantidad: int
     producto_combo_id: int | None = None
+    contexto_origen: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,13 @@ class PricedItem:
     categoria_venta_id: int
     subtotal: Decimal
     requiere_confirmacion: bool
+
+
+@dataclass(frozen=True)
+class AppliedPromotion:
+    precio_unitario: Decimal
+    cantidad_minima: int
+    precio_total: Decimal | None = None
 
 
 class OrderService:
@@ -180,6 +188,40 @@ class OrderService:
         items: list[OrderItemInput],
         contexto_origen: str = DEFAULT_CONTEXT_CODE,
     ) -> list[PricedItem]:
+        context_by_index = [
+            item.contexto_origen or contexto_origen
+            for item in items
+        ]
+        unique_contexts = set(context_by_index)
+        if len(unique_contexts) == 1:
+            contexto_origen = next(iter(unique_contexts))
+        if len(set(context_by_index)) > 1:
+            grouped_results: dict[int, PricedItem] = {}
+            for context in dict.fromkeys(context_by_index):
+                indexed_group = [
+                    (index, item)
+                    for index, item in enumerate(items)
+                    if context_by_index[index] == context
+                ]
+                group_items = [
+                    OrderItemInput(
+                        producto_id=item.producto_id,
+                        cantidad=item.cantidad,
+                        producto_combo_id=item.producto_combo_id,
+                    )
+                    for _, item in indexed_group
+                ]
+                priced_group = self._price_items(group_items, context)
+                for (index, _), priced_item in zip(indexed_group, priced_group):
+                    grouped_results[index] = PricedItem(
+                        item=items[index],
+                        precio_unitario=priced_item.precio_unitario,
+                        categoria_venta_id=priced_item.categoria_venta_id,
+                        subtotal=priced_item.subtotal,
+                        requiere_confirmacion=priced_item.requiere_confirmacion,
+                    )
+            return [grouped_results[index] for index in range(len(items))]
+
         products = self._load_products(items)
         origin_category = self._get_category_by_code(contexto_origen)
         sale_category = self._resolve_sale_category(items, contexto_origen, origin_category)
@@ -187,7 +229,7 @@ class OrderService:
         promotional_prices = (
             {}
             if sale_category.codigo in {EVENTS_CONTEXT_CODE, WHOLESALE_CONTEXT_CODE}
-            else self._eligible_promotional_prices(items)
+            else self._eligible_promotions(items, category_prices)
         )
 
         priced_items: list[PricedItem] = []
@@ -195,25 +237,24 @@ class OrderService:
             if item.cantidad <= 0:
                 raise ValidationError("La cantidad debe ser mayor a cero.")
             product = products[item.producto_id]
-            base_price = self._item_base_price(
-                product.id or 0,
-                category_prices,
-                promotional_prices,
-                is_combo=False,
-            )
+            base_price = self._item_base_price(product.id or 0, category_prices, is_combo=False)
 
             requires_confirmation = False
-            unit_price = base_price
+            unit_price = self._money(base_price)
+            subtotal = self._money(base_price * item.cantidad)
+            promotion = promotional_prices.get(product.id or 0)
+            if promotion is not None and item.producto_combo_id is None:
+                unit_price, subtotal = self._apply_promotion_to_line(
+                    base_price=base_price,
+                    quantity=item.cantidad,
+                    promotion=promotion,
+                )
             if item.producto_combo_id is not None:
                 combo_product = products[item.producto_combo_id]
-                combo_base_price = self._item_base_price(
-                    combo_product.id or 0,
-                    category_prices,
-                    promotional_prices,
-                    is_combo=True,
-                )
+                combo_base_price = self._item_base_price(combo_product.id or 0, category_prices, is_combo=True)
                 combo_rule = self._get_combo_rule(product.id or 0, combo_product.id or 0)
                 unit_price = self._combo_price(combo_rule, base_price, combo_base_price)
+                subtotal = unit_price * item.cantidad
                 requires_confirmation = combo_rule.requiere_confirmacion
 
             unit_price = self._money(unit_price)
@@ -222,7 +263,7 @@ class OrderService:
                     item=item,
                     precio_unitario=unit_price,
                     categoria_venta_id=sale_category.id or 0,
-                    subtotal=self._money(unit_price * item.cantidad),
+                    subtotal=self._money(subtotal),
                     requiere_confirmacion=requires_confirmation,
                 )
             )
@@ -292,17 +333,35 @@ class OrderService:
         self,
         product_id: int,
         category_prices: dict[int, Decimal],
-        promotional_prices: dict[int, Decimal],
         *,
         is_combo: bool,
     ) -> Decimal:
         if product_id not in category_prices:
             raise ValidationError("El producto no tiene precio configurado para el contexto.")
-        if is_combo:
-            return category_prices[product_id]
-        return promotional_prices.get(product_id, category_prices[product_id])
+        return category_prices[product_id]
 
-    def _eligible_promotional_prices(self, items: list[OrderItemInput]) -> dict[int, Decimal]:
+    def _apply_promotion_to_line(
+        self,
+        *,
+        base_price: Decimal,
+        quantity: int,
+        promotion: AppliedPromotion,
+    ) -> tuple[Decimal, Decimal]:
+        if promotion.precio_total is None:
+            unit_price = self._money(promotion.precio_unitario)
+            return unit_price, self._money(unit_price * quantity)
+
+        package_count = quantity // promotion.cantidad_minima
+        remainder = quantity % promotion.cantidad_minima
+        subtotal = (promotion.precio_total * package_count) + (base_price * remainder)
+        effective_unit = subtotal / Decimal(quantity)
+        return self._money(effective_unit), self._money(subtotal)
+
+    def _eligible_promotions(
+        self,
+        items: list[OrderItemInput],
+        category_prices: dict[int, Decimal],
+    ) -> dict[int, AppliedPromotion]:
         quantities_by_product = {
             item.producto_id: sum(
                 i.cantidad
@@ -319,7 +378,7 @@ class OrderService:
             )
         ).all()
 
-        prices: dict[int, Decimal] = {}
+        prices: dict[int, AppliedPromotion] = {}
         for promotion in promotions:
             links = self.session.exec(
                 select(PromocionProducto).where(PromocionProducto.promocion_id == promotion.id)
@@ -333,10 +392,38 @@ class OrderService:
             if eligible_quantity < promotion.cantidad_minima:
                 continue
             for product_id in eligible_product_ids:
-                current_price = prices.get(product_id)
-                if current_price is None or promotion.precio_unitario_promocional < current_price:
-                    prices[product_id] = promotion.precio_unitario_promocional
+                if product_id not in quantities_by_product:
+                    continue
+                candidate = AppliedPromotion(
+                    precio_unitario=promotion.precio_unitario_promocional,
+                    cantidad_minima=promotion.cantidad_minima,
+                    precio_total=promotion.precio_total_promocional,
+                )
+                current = prices.get(product_id)
+                if current is None or self._promotion_line_total(
+                    quantities_by_product[product_id],
+                    category_price=category_prices.get(product_id),
+                    promotion=candidate,
+                ) < self._promotion_line_total(
+                    quantities_by_product[product_id],
+                    category_price=category_prices.get(product_id),
+                    promotion=current,
+                ):
+                    prices[product_id] = candidate
         return prices
+
+    @staticmethod
+    def _promotion_line_total(
+        quantity: int,
+        category_price: Decimal | None,
+        promotion: AppliedPromotion,
+    ) -> Decimal:
+        if promotion.precio_total is None:
+            return promotion.precio_unitario * quantity
+        package_count = quantity // promotion.cantidad_minima
+        remainder = quantity % promotion.cantidad_minima
+        remainder_price = (category_price or promotion.precio_unitario) * remainder
+        return (promotion.precio_total * package_count) + remainder_price
 
     def _get_combo_rule(self, product_a_id: int, product_b_id: int) -> ComboRegla:
         combo_rule = self.session.exec(

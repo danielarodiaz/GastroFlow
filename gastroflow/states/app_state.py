@@ -39,6 +39,7 @@ from gastroflow.services import (
     CRUD_TABLES,
     ExpenseInput,
     ExpenseService,
+    DEFAULT_CONTEXT_CODE,
     OrderItemInput,
     OrderService,
     PublicOrderInput,
@@ -118,6 +119,25 @@ def _parse_money_input(value: str) -> Decimal:
         if len(right) == 3 and len(left) <= 3:
             clean = left + right
     return Decimal(clean).quantize(MONEY_QUANT)
+
+
+def _parse_optional_money_input(value: str) -> Decimal | None:
+    if not value.strip():
+        return None
+    return _parse_money_input(value)
+
+
+def _friendly_error(exc: Exception) -> str:
+    text = str(exc)
+    if "duplicate key value" in text or "UniqueViolation" in text:
+        return "Ese dato ya existe. Revisa lo elegido y proba nuevamente."
+    if "ConversionSyntax" in text or "decimal" in text.lower():
+        return "No pude leer uno de los numeros. Podes usar coma o punto para decimales."
+    if isinstance(exc, DomainError):
+        return text
+    if isinstance(exc, ValueError):
+        return text or "Revisa los datos ingresados."
+    return "No se pudo completar la accion. Revisa los datos e intenta nuevamente."
 
 
 def _xlsx_download(rows: list[dict[str, Any]], filename: str) -> rx.event.EventSpec:
@@ -208,9 +228,12 @@ def _validate_time(value: str) -> None:
 class AuthState(rx.State):
     username: str = ""
     password: str = ""
+    show_password: bool = False
     user_id: int = 0
     role: str = ""
     message: str = ""
+    technical_error: str = ""
+    show_technical_error: bool = False
 
     @rx.var
     def is_authenticated(self) -> bool:
@@ -231,6 +254,9 @@ class AuthState(rx.State):
         )
 
     def login(self) -> rx.event.EventSpec | None:
+        self.message = ""
+        self.technical_error = ""
+        self.show_technical_error = False
         try:
             with Session(engine) as session:
                 user = AuthService(session).authenticate(self.username, self.password)
@@ -241,7 +267,8 @@ class AuthState(rx.State):
             self.message = "Sesion iniciada."
             return rx.redirect("/pedidos")
         except DomainError as exc:
-            self.message = str(exc)
+            self.message = _friendly_error(exc)
+            self.technical_error = str(exc)
             return None
 
     def logout(self) -> rx.event.EventSpec:
@@ -249,8 +276,21 @@ class AuthState(rx.State):
         self.password = ""
         self.user_id = 0
         self.role = ""
-        self.message = "Sesion cerrada."
+        self.message = ""
+        self.technical_error = ""
+        self.show_technical_error = False
         return rx.redirect("/login")
+
+    def clear_message(self) -> None:
+        self.message = ""
+        self.technical_error = ""
+        self.show_technical_error = False
+
+    def toggle_password_visibility(self) -> None:
+        self.show_password = not self.show_password
+
+    def toggle_technical_error(self) -> None:
+        self.show_technical_error = not self.show_technical_error
 
 
 class BrandState(rx.State):
@@ -285,8 +325,11 @@ class PublicOrderState(rx.State):
     cart_total_display: str = "0,00"
     order_total_display: str = "0,00"
     message: str = ""
+    technical_error: str = ""
 
     def load_catalog(self) -> None:
+        self.message = ""
+        self.technical_error = ""
         with Session(engine) as session:
             categories = session.exec(
                 select(Categoria).where(
@@ -302,6 +345,7 @@ class PublicOrderState(rx.State):
             zones = session.exec(select(ZonaEnvio)).all()
 
         category_names = {category.id: category.nombre for category in categories}
+        category_codes = {category.id: category.codigo for category in categories}
         product_by_id = {product.id: product for product in products if product.activo}
         product_count_by_category: dict[int, int] = {}
         for product_category in product_categories:
@@ -327,6 +371,7 @@ class PublicOrderState(rx.State):
                 "id": product.id,
                 "categoria_id": product_category.categoria_id,
                 "categoria": category_names.get(product_category.categoria_id, ""),
+                "categoria_codigo": category_codes.get(product_category.categoria_id, ""),
                 "codigo": product.codigo,
                 "nombre": product.nombre,
                 "precio": str(product_category.precio),
@@ -406,6 +451,7 @@ class PublicOrderState(rx.State):
                     "producto_id": product_id,
                     "nombre": self.selected_product["nombre"],
                     "categoria": self.selected_product["categoria"],
+                    "categoria_codigo": self.selected_product["categoria_codigo"],
                     "precio": str(price),
                     "precio_display": _money_text(price),
                     "cantidad": quantity,
@@ -469,6 +515,7 @@ class PublicOrderState(rx.State):
                 OrderItemInput(
                     producto_id=int(item["producto_id"]),
                     cantidad=int(item["cantidad"]),
+                    contexto_origen=str(item.get("categoria_codigo") or DEFAULT_CONTEXT_CODE),
                 )
                 for item in self.cart
             ]
@@ -488,7 +535,8 @@ class PublicOrderState(rx.State):
             self.message = "Pedido creado. Te llevamos a WhatsApp para enviar el resumen."
             return rx.redirect(whatsapp_url, is_external=True)
         except Exception as exc:
-            self.message = str(exc)
+            self.message = _friendly_error(exc)
+            self.technical_error = str(exc)
             return None
 
     def _refresh_cart_total(self) -> None:
@@ -496,7 +544,11 @@ class PublicOrderState(rx.State):
         if cart:
             try:
                 inputs = [
-                    OrderItemInput(producto_id=int(item["producto_id"]), cantidad=int(item["cantidad"]))
+                    OrderItemInput(
+                        producto_id=int(item["producto_id"]),
+                        cantidad=int(item["cantidad"]),
+                        contexto_origen=str(item.get("categoria_codigo") or DEFAULT_CONTEXT_CODE),
+                    )
                     for item in cart
                 ]
                 with Session(engine) as session:
@@ -506,7 +558,7 @@ class PublicOrderState(rx.State):
                     final_unit = Decimal(str(priced_item.precio_unitario))
                     quantity = Decimal(str(cart_item["cantidad"]))
                     base_subtotal = base_unit * quantity
-                    subtotal = final_unit * quantity
+                    subtotal = Decimal(str(priced_item.subtotal))
                     discount = base_subtotal - subtotal
                     cart_item["precio_final"] = str(final_unit)
                     cart_item["subtotal"] = str(subtotal)
@@ -517,7 +569,10 @@ class PublicOrderState(rx.State):
                     cart_item["promo_label"] = (
                         f"Promo aplicada: $-{_money_text(discount)}" if discount > 0 else ""
                     )
-            except Exception:
+            except Exception as exc:
+                if isinstance(exc, ValueError):
+                    self.message = _friendly_error(exc)
+                self.technical_error = str(exc)
                 for cart_item in cart:
                     subtotal = Decimal(str(cart_item["precio"])) * Decimal(str(cart_item["cantidad"]))
                     cart_item["subtotal"] = str(subtotal)
@@ -636,6 +691,7 @@ class OperationsState(rx.State):
     message: str = ""
 
     def load_orders(self) -> None:
+        self.message = ""
         with Session(engine) as session:
             pedidos = session.exec(select(Pedido)).all()
             clientes = {cliente.id: cliente for cliente in session.exec(select(Cliente)).all()}
@@ -772,7 +828,7 @@ class OperationsState(rx.State):
             self.message = "Estado actualizado."
             self.load_orders()
         except DomainError as exc:
-            self.message = str(exc)
+            self.message = _friendly_error(exc)
 
 
 class ExpenseState(rx.State):
@@ -805,6 +861,7 @@ class ExpenseState(rx.State):
     pending_save: bool = False
 
     def load_expenses(self) -> None:
+        self.message = ""
         with Session(engine) as session:
             gastos = session.exec(select(Gasto)).all()
             motivos = {motivo.id: motivo for motivo in session.exec(select(MotivoGasto)).all()}
@@ -984,9 +1041,9 @@ class ExpenseState(rx.State):
             self.load_expenses()
             return rx.toast.success(message)
         except Exception as exc:
-            self.message = str(exc)
+            self.message = _friendly_error(exc)
             self.pending_save = False
-            return rx.toast.error(str(exc))
+            return rx.toast.error(self.message)
 
     async def delete_expense(self) -> rx.event.EventSpec | None:
         auth = await self.get_state(AuthState)
@@ -1006,9 +1063,9 @@ class ExpenseState(rx.State):
             self.load_expenses()
             return rx.toast.success(f"Gasto {code} eliminado.")
         except Exception as exc:
-            self.message = str(exc)
+            self.message = _friendly_error(exc)
             self.pending_delete_id = ""
-            return rx.toast.error(str(exc))
+            return rx.toast.error(self.message)
 
 
 class CatalogAdminState(rx.State):
@@ -1036,16 +1093,24 @@ class CatalogAdminState(rx.State):
     promo_nombre: str = ""
     promo_cantidad_minima: str = "2"
     promo_precio: str = "0"
+    promo_precio_total: str = ""
     promo_activa: bool = True
     promo_product_ids: str = ""
+    promo_available_product_options: list[str] = []
     pending_delete_product_category_id: str = ""
+    pending_delete_category_id: str = ""
     pending_delete_promo_id: str = ""
     pending_save_category: bool = False
     pending_save_product: bool = False
     logo_url: str = _normalize_upload_path(_read_brand_logo_url())
     message: str = ""
+    technical_error: str = ""
+    show_technical_error: bool = False
 
     async def load_catalog_admin(self) -> None:
+        self.message = ""
+        self.technical_error = ""
+        self.show_technical_error = False
         auth = await self.get_state(AuthState)
         if auth.role != RolUsuario.ADMIN.value:
             self.message = "Solo Admin puede editar catalogo."
@@ -1115,6 +1180,12 @@ class CatalogAdminState(rx.State):
             for product in sorted(products.values(), key=lambda item: item.nombre)
             if product.activo
         ]
+        selected_promo_ids = set(self._selected_promo_product_ids())
+        self.promo_available_product_options = [
+            option
+            for option in self.promo_product_options
+            if int(option.split(" - ", 1)[0]) not in selected_promo_ids
+        ]
         links_by_promo: dict[int, list[str]] = {}
         for link in promotion_links:
             links_by_promo.setdefault(link.promocion_id, []).append(product_names.get(link.producto_id, str(link.producto_id)))
@@ -1126,6 +1197,8 @@ class CatalogAdminState(rx.State):
                 "cantidad_minima": str(promo.cantidad_minima),
                 "precio": str(promo.precio_unitario_promocional),
                 "precio_display": _money_text(promo.precio_unitario_promocional),
+                "precio_total": str(promo.precio_total_promocional or ""),
+                "precio_total_display": _money_text(promo.precio_total_promocional) if promo.precio_total_promocional is not None else "",
                 "activa": promo.activa,
                 "productos": ", ".join(links_by_promo.get(promo.id or 0, [])),
             }
@@ -1149,6 +1222,12 @@ class CatalogAdminState(rx.State):
         self.promo_selected_products = [
             {"id": product_id, "nombre": product_names.get(product_id, f"Producto {product_id}")}
             for product_id in self._selected_promo_product_ids()
+        ]
+        selected_promo_ids = set(self._selected_promo_product_ids())
+        self.promo_available_product_options = [
+            option
+            for option in self.promo_product_options
+            if int(option.split(" - ", 1)[0]) not in selected_promo_ids
         ]
 
     def select_category(self, category_id: int) -> None:
@@ -1188,6 +1267,9 @@ class CatalogAdminState(rx.State):
     def set_promo_nombre(self, value: str) -> None:
         self.promo_nombre = value.upper()
 
+    def set_promo_precio_total(self, value: str) -> None:
+        self.promo_precio_total = value
+
     def set_promo_product_ids(self, value: str) -> None:
         self.promo_product_ids = value
         self._sync_promo_selected_products()
@@ -1217,8 +1299,9 @@ class CatalogAdminState(rx.State):
             return rx.toast.success("Categoria modificada.")
         except Exception as exc:
             self.pending_save_category = False
-            self.message = str(exc)
-            return rx.toast.error(str(exc))
+            self.message = _friendly_error(exc)
+            self.technical_error = str(exc)
+            return rx.toast.error(self.message)
 
     def request_save_category(self) -> None:
         self.pending_save_category = True
@@ -1252,8 +1335,9 @@ class CatalogAdminState(rx.State):
             return rx.toast.success("Producto modificado.")
         except Exception as exc:
             self.pending_save_product = False
-            self.message = str(exc)
-            return rx.toast.error(str(exc))
+            self.message = _friendly_error(exc)
+            self.technical_error = str(exc)
+            return rx.toast.error(self.message)
 
     def request_save_product_category(self) -> None:
         self.pending_save_product = True
@@ -1298,8 +1382,48 @@ class CatalogAdminState(rx.State):
             self._load_catalog_data()
             return rx.toast.success("Producto agregado a la categoria.")
         except Exception as exc:
-            self.message = str(exc)
-            return rx.toast.error(str(exc))
+            self.message = _friendly_error(exc)
+            self.technical_error = str(exc)
+            return rx.toast.error(self.message)
+
+    def request_delete_category(self) -> None:
+        if not self.selected_category_id:
+            self.message = "Selecciona una categoria para quitar."
+            return
+        self.pending_delete_category_id = self.selected_category_id
+
+    def cancel_delete_category(self) -> None:
+        self.pending_delete_category_id = ""
+
+    async def delete_category(self) -> rx.event.EventSpec | None:
+        auth = await self.get_state(AuthState)
+        if auth.role != RolUsuario.ADMIN.value:
+            self.message = "Solo Admin puede editar catalogo."
+            return None
+        try:
+            with Session(engine) as session:
+                linked = session.exec(
+                    select(ProductoCategoria).where(ProductoCategoria.categoria_id == int(self.pending_delete_category_id))
+                ).first()
+                if linked is not None:
+                    self.pending_delete_category_id = ""
+                    self.message = "Quita los productos asociados a la categoria para poder quitar la categoria"
+                    return rx.toast.warning(self.message)
+                category = session.get(Categoria, int(self.pending_delete_category_id))
+                if category is None:
+                    raise ValueError("Categoria inexistente.")
+                session.delete(category)
+                session.commit()
+            self.pending_delete_category_id = ""
+            self.selected_category_id = ""
+            self.message = "Categoria eliminada."
+            self._load_catalog_data()
+            return rx.toast.success("Categoria eliminada.")
+        except Exception as exc:
+            self.pending_delete_category_id = ""
+            self.message = _friendly_error(exc)
+            self.technical_error = str(exc)
+            return rx.toast.error(self.message)
 
     def request_delete_product_category(self, product_category_id: int) -> None:
         self.pending_delete_product_category_id = str(product_category_id)
@@ -1326,8 +1450,9 @@ class CatalogAdminState(rx.State):
             return rx.toast.success("Producto eliminado de la categoria.")
         except Exception as exc:
             self.pending_delete_product_category_id = ""
-            self.message = str(exc)
-            return rx.toast.error(str(exc))
+            self.message = _friendly_error(exc)
+            self.technical_error = str(exc)
+            return rx.toast.error(self.message)
 
     async def upload_category_photo(self, files: list[rx.UploadFile]) -> None:
         auth = await self.get_state(AuthState)
@@ -1420,6 +1545,7 @@ class CatalogAdminState(rx.State):
         self.promo_nombre = ""
         self.promo_cantidad_minima = "2"
         self.promo_precio = "0"
+        self.promo_precio_total = ""
         self.promo_activa = True
         self.promo_product_ids = ""
         self.promo_selected_product = ""
@@ -1434,6 +1560,7 @@ class CatalogAdminState(rx.State):
         self.promo_nombre = selected["nombre"]
         self.promo_cantidad_minima = selected["cantidad_minima"]
         self.promo_precio = selected["precio"]
+        self.promo_precio_total = selected["precio_total"]
         self.promo_activa = bool(selected["activa"])
         with Session(engine) as session:
             links = session.exec(select(PromocionProducto).where(PromocionProducto.promocion_id == promo_id)).all()
@@ -1451,6 +1578,9 @@ class CatalogAdminState(rx.State):
         ids = self._selected_promo_product_ids()
         if product_id not in ids:
             ids.append(product_id)
+        else:
+            self.message = "Ese producto ya esta elegido para esta promocion."
+            return rx.toast.warning(self.message)
         self.promo_product_ids = ",".join(str(item) for item in ids)
         self.promo_selected_product = ""
         self._sync_promo_selected_products()
@@ -1467,11 +1597,15 @@ class CatalogAdminState(rx.State):
             self.message = "Solo Admin puede editar promociones."
             return None
         try:
-            product_ids = [
+            package_total = _parse_optional_money_input(self.promo_precio_total)
+            unit_price = _parse_money_input(self.promo_precio)
+            if package_total is not None and unit_price == Decimal("0.00"):
+                unit_price = (package_total / Decimal(int(self.promo_cantidad_minima))).quantize(MONEY_QUANT)
+            product_ids = list(dict.fromkeys(
                 int(value.strip())
                 for value in self.promo_product_ids.split(",")
                 if value.strip()
-            ]
+            ))
             with Session(engine) as session:
                 if self.promo_id:
                     promo = session.get(Promocion, int(self.promo_id))
@@ -1484,7 +1618,8 @@ class CatalogAdminState(rx.State):
                         nombre=_upper_text(self.promo_nombre),
                         tipo=TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
                         cantidad_minima=int(self.promo_cantidad_minima),
-                        precio_unitario_promocional=_parse_money_input(self.promo_precio),
+                        precio_unitario_promocional=unit_price,
+                        precio_total_promocional=package_total,
                         activa=self.promo_activa,
                     )
                     session.add(promo)
@@ -1493,7 +1628,8 @@ class CatalogAdminState(rx.State):
                 promo.codigo = _upper_text(self.promo_codigo)
                 promo.nombre = _upper_text(self.promo_nombre)
                 promo.cantidad_minima = int(self.promo_cantidad_minima)
-                promo.precio_unitario_promocional = _parse_money_input(self.promo_precio)
+                promo.precio_unitario_promocional = unit_price
+                promo.precio_total_promocional = package_total
                 promo.activa = self.promo_activa
                 session.add(promo)
                 session.flush()
@@ -1507,8 +1643,9 @@ class CatalogAdminState(rx.State):
             self._load_catalog_data()
             return rx.toast.success(self.message)
         except Exception as exc:
-            self.message = str(exc)
-            return rx.toast.error(str(exc))
+            self.message = _friendly_error(exc)
+            self.technical_error = str(exc)
+            return rx.toast.error(self.message)
 
     def request_delete_promo(self, promo_id: int) -> None:
         self.pending_delete_promo_id = str(promo_id)
@@ -1536,8 +1673,12 @@ class CatalogAdminState(rx.State):
             return rx.toast.success("Promocion eliminada.")
         except Exception as exc:
             self.pending_delete_promo_id = ""
-            self.message = str(exc)
-            return rx.toast.error(str(exc))
+            self.message = _friendly_error(exc)
+            self.technical_error = str(exc)
+            return rx.toast.error(self.message)
+
+    def toggle_technical_error(self) -> None:
+        self.show_technical_error = not self.show_technical_error
 
     async def _save_upload(self, file: rx.UploadFile, folder: str) -> str:
         upload_dir = Path(rx.get_upload_dir()) / folder
@@ -1569,7 +1710,7 @@ class AdminCrudState(rx.State):
             self.records = [_display_record_row(record) for record in records]
             self.message = f"{len(self.records)} registros."
         except Exception as exc:
-            self.message = str(exc)
+            self.message = _friendly_error(exc)
 
     def set_table(self, table_name: str) -> None:
         self.table_name = table_name
@@ -1594,7 +1735,7 @@ class AdminCrudState(rx.State):
             self.message = "Registro borrado."
             await self.load_records()
         except Exception as exc:
-            self.message = str(exc)
+            self.message = _friendly_error(exc)
 
     async def _save_record(self, *, create: bool) -> None:
         auth = await self.get_state(AuthState)
@@ -1612,4 +1753,4 @@ class AdminCrudState(rx.State):
             self.message = f"Guardado: {_display_record(record)}"
             await self.load_records()
         except Exception as exc:
-            self.message = str(exc)
+            self.message = _friendly_error(exc)

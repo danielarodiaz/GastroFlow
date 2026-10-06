@@ -94,6 +94,7 @@ class PromocionBase(SQLModel):
     )
     cantidad_minima: int = Field(gt=0)
     precio_unitario_promocional: Decimal = Field(sa_column=money_column())
+    precio_total_promocional: Optional[Decimal] = Field(default=None, sa_column=money_column(nullable=True))
     activa: bool = Field(default=True, sa_column=Column(Boolean, nullable=False))
     vigencia_desde: Optional[datetime] = None
     vigencia_hasta: Optional[datetime] = None

@@ -41,7 +41,7 @@ class AuthService:
         normalized_username = self._normalize_username(username)
         user = self._get_user_by_username(normalized_username)
         if user is None or not verify_password(password, user.password_hash):
-            raise AuthenticationError("Credenciales invalidas.")
+            raise AuthenticationError("El usuario o la contraseña no son correctos.")
         return self._to_read(user)
 
     def require_role(self, user: UsuarioRead, allowed_roles: Iterable[RolUsuario]) -> None:

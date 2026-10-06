@@ -5,10 +5,10 @@ from sqlalchemy import text
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine
 
-from gastroflow.domain.enums import EstadoPedido, ReglaPrecioCombo, UnidadVenta
+from gastroflow.domain.enums import EstadoPedido, ReglaPrecioCombo, TipoPromocion, UnidadVenta
 from gastroflow.domain.errors import ValidationError
 from gastroflow.domain.order_state import assert_valid_order_transition
-from gastroflow.models import Categoria, ComboRegla, Producto, ProductoCategoria
+from gastroflow.models import Categoria, ComboRegla, Producto, ProductoCategoria, Promocion, PromocionProducto
 from gastroflow.services.orders import EVENTS_CONTEXT_CODE, OrderItemInput, OrderService, normalize_phone
 
 
@@ -97,6 +97,7 @@ def _session() -> Session:
                     tipo VARCHAR(40) NOT NULL,
                     cantidad_minima INTEGER NOT NULL,
                     precio_unitario_promocional NUMERIC(12, 2) NOT NULL,
+                    precio_total_promocional NUMERIC(12, 2),
                     activa BOOLEAN NOT NULL,
                     vigencia_desde DATETIME,
                     vigencia_hasta DATETIME
@@ -121,6 +122,7 @@ def _session() -> Session:
 
 def _catalog(session: Session) -> dict[str, int]:
     lista_horno = Categoria(codigo="LISTA_HORNO", nombre="Lista para hornear")
+    lista_comer = Categoria(codigo="LISTA_COMER", nombre="Lista para comer")
     eventos = Categoria(
         codigo="EVENTOS",
         nombre="Eventos",
@@ -136,7 +138,8 @@ def _catalog(session: Session) -> dict[str, int]:
     )
     muzza = Producto(codigo="PROD-MUZZA", nombre="Muzzarella", unidad_venta=UnidadVenta.PIEZA)
     especial = Producto(codigo="PROD-ESP", nombre="Especial", unidad_venta=UnidadVenta.PIEZA)
-    session.add_all([lista_horno, eventos, mayorista, muzza, especial])
+    prepizza = Producto(codigo="PROD-PREPIZZA", nombre="Prepizza", unidad_venta=UnidadVenta.UNIDAD)
+    session.add_all([lista_horno, lista_comer, eventos, mayorista, muzza, especial, prepizza])
     session.flush()
     for product, standard, event, wholesale in (
         (muzza, "5500.00", "5200.00", "4500.00"),
@@ -162,6 +165,13 @@ def _catalog(session: Session) -> dict[str, int]:
             ]
         )
     session.add(
+        ProductoCategoria(
+            producto_id=prepizza.id or 0,
+            categoria_id=lista_comer.id or 0,
+            precio=Decimal("1300.00"),
+        )
+    )
+    session.add(
         ComboRegla(
             producto_a_id=muzza.id or 0,
             producto_b_id=especial.id or 0,
@@ -172,10 +182,12 @@ def _catalog(session: Session) -> dict[str, int]:
     session.commit()
     return {
         "lista_horno": lista_horno.id or 0,
+        "lista_comer": lista_comer.id or 0,
         "eventos": eventos.id or 0,
         "mayorista": mayorista.id or 0,
         "muzza": muzza.id or 0,
         "especial": especial.id or 0,
+        "prepizza": prepizza.id or 0,
     }
 
 
@@ -264,6 +276,93 @@ def test_combos_count_as_one_unit_each_for_wholesale_threshold() -> None:
 
         assert priced_items[0].categoria_venta_id == ids["mayorista"]
         assert priced_items[0].precio_unitario == Decimal("5250.00")
+
+
+def test_package_promotion_keeps_exact_total() -> None:
+    with _session() as session:
+        ids = _catalog(session)
+        promo = Promocion(
+            codigo="PROMO_PREPIZZA_3",
+            nombre="3 PREPIZZAS",
+            tipo=TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
+            cantidad_minima=3,
+            precio_unitario_promocional=Decimal("1166.67"),
+            precio_total_promocional=Decimal("3500.00"),
+        )
+        session.add(promo)
+        session.flush()
+        session.add(PromocionProducto(promocion_id=promo.id or 0, producto_id=ids["muzza"]))
+        session.commit()
+
+        priced_items = OrderService(session)._price_items(
+            [OrderItemInput(producto_id=ids["muzza"], cantidad=3)]
+        )
+
+        assert priced_items[0].precio_unitario == Decimal("1166.67")
+        assert priced_items[0].subtotal == Decimal("3500.00")
+
+
+def test_mixed_context_items_keep_each_promotion() -> None:
+    with _session() as session:
+        ids = _catalog(session)
+        promo_especial = Promocion(
+            codigo="PROMO_ESPECIAL_HORNO_2",
+            nombre="2 ESPECIALES HORNO",
+            tipo=TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
+            cantidad_minima=2,
+            precio_unitario_promocional=Decimal("6500.00"),
+        )
+        promo_prepizza = Promocion(
+            codigo="PROMO_PRE_PIZZA_3",
+            nombre="3 PREPIZZAS",
+            tipo=TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
+            cantidad_minima=3,
+            precio_unitario_promocional=Decimal("1166.67"),
+            precio_total_promocional=Decimal("3500.00"),
+        )
+        session.add_all([promo_especial, promo_prepizza])
+        session.flush()
+        session.add_all(
+            [
+                PromocionProducto(promocion_id=promo_especial.id or 0, producto_id=ids["especial"]),
+                PromocionProducto(promocion_id=promo_prepizza.id or 0, producto_id=ids["prepizza"]),
+            ]
+        )
+        session.commit()
+
+        priced_items = OrderService(session)._price_items(
+            [
+                OrderItemInput(producto_id=ids["especial"], cantidad=2, contexto_origen="LISTA_HORNO"),
+                OrderItemInput(producto_id=ids["prepizza"], cantidad=3, contexto_origen="LISTA_COMER"),
+            ]
+        )
+
+        assert priced_items[0].subtotal == Decimal("13000.00")
+        assert priced_items[1].subtotal == Decimal("3500.00")
+
+
+def test_single_non_default_context_item_keeps_its_promotion() -> None:
+    with _session() as session:
+        ids = _catalog(session)
+        promo = Promocion(
+            codigo="PROMO_PRE_PIZZA_3",
+            nombre="3 PREPIZZAS",
+            tipo=TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
+            cantidad_minima=3,
+            precio_unitario_promocional=Decimal("1166.67"),
+            precio_total_promocional=Decimal("3500.00"),
+        )
+        session.add(promo)
+        session.flush()
+        session.add(PromocionProducto(promocion_id=promo.id or 0, producto_id=ids["prepizza"]))
+        session.commit()
+
+        priced_items = OrderService(session)._price_items(
+            [OrderItemInput(producto_id=ids["prepizza"], cantidad=3, contexto_origen="LISTA_COMER")]
+        )
+
+        assert priced_items[0].categoria_venta_id == ids["lista_comer"]
+        assert priced_items[0].subtotal == Decimal("3500.00")
 
 
 def test_combo_regla_migration_defines_symmetric_unique_index() -> None:
