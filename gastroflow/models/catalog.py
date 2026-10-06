@@ -199,3 +199,20 @@ class MarcaCreate(MarcaBase):
 
 class MarcaRead(MarcaBase):
     id: int
+
+
+class AppConfigBase(SQLModel):
+    key: str = Field(index=True, unique=True, max_length=120)
+    value: Optional[str] = Field(default=None)
+
+
+class AppConfig(AppConfigBase, IdMixin, table=True):
+    __tablename__ = "app_config"
+
+
+class AppConfigCreate(AppConfigBase):
+    pass
+
+
+class AppConfigRead(AppConfigBase):
+    id: int

@@ -16,6 +16,9 @@ RUN pip install --upgrade pip \
 
 COPY . .
 
-EXPOSE 3000 8000
+EXPOSE 3000
 
-CMD ["reflex", "run", "--env", "dev", "--frontend-port", "3000", "--backend-port", "8000", "--backend-host", "0.0.0.0"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD curl -f http://127.0.0.1:3000/ping || exit 1
+
+CMD ["reflex", "run", "--env", "prod", "--frontend-port", "3000", "--backend-host", "0.0.0.0"]

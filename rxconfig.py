@@ -7,8 +7,7 @@ config = rx.Config(
     app_module_import="gastroflow.app",
     frontend_port=3000,
     backend_port=8000,
-    backend_host="127.0.0.1",
-    api_url="http://127.0.0.1:8000",
+    backend_host="0.0.0.0",
     plugins=[
         TailwindV3Plugin(
             config={

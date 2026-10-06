@@ -1,6 +1,10 @@
 from sqlmodel import SQLModel
 
 from gastroflow.models.catalog import (
+    AppConfig,
+    AppConfigBase,
+    AppConfigCreate,
+    AppConfigRead,
     Categoria,
     CategoriaBase,
     CategoriaCreate,
@@ -63,6 +67,10 @@ from gastroflow.models.transactional import (
 
 __all__ = [
     "SQLModel",
+    "AppConfig",
+    "AppConfigBase",
+    "AppConfigCreate",
+    "AppConfigRead",
     "Categoria",
     "CategoriaBase",
     "CategoriaCreate",

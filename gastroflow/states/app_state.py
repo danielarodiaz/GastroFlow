@@ -44,6 +44,8 @@ from gastroflow.services import (
     OrderService,
     PublicOrderInput,
 )
+from gastroflow.services.media_storage import normalize_media_url, save_media_upload
+from gastroflow.models import AppConfig
 
 MONEY_QUANT = Decimal("0.01")
 QUANTITY_QUANT = Decimal("0.001")
@@ -62,8 +64,8 @@ MONTH_NUMBERS = {
     "Noviembre": "11",
     "Diciembre": "12",
 }
-UPLOAD_ROOT = Path("uploads")
 BRAND_SETTINGS_PATH = Path("uploaded_files") / "brand" / "settings.json"
+BRAND_LOGO_CONFIG_KEY = "brand.logo_url"
 STORE_NAME = os.getenv("STORE_NAME", "")
 PIZZERIA_WHATSAPP_PHONE = os.getenv("PIZZERIA_WHATSAPP_PHONE", "")
 TRANSFER_TITULAR = os.getenv("TRANSFER_TITULAR", "")
@@ -165,6 +167,16 @@ def _contains(value: str, filter_value: str) -> bool:
 
 def _read_brand_logo_url() -> str:
     try:
+        with Session(engine) as session:
+            setting = session.exec(select(AppConfig).where(AppConfig.key == BRAND_LOGO_CONFIG_KEY)).first()
+            if setting is not None and setting.value:
+                return setting.value
+    except Exception:
+        pass
+    env_logo_url = os.getenv("BRAND_LOGO_URL", "")
+    if env_logo_url:
+        return env_logo_url
+    try:
         data = json.loads(BRAND_SETTINGS_PATH.read_text(encoding="utf-8"))
         return str(data.get("logo_url") or "")
     except Exception:
@@ -172,14 +184,18 @@ def _read_brand_logo_url() -> str:
 
 
 def _write_brand_logo_url(url: str) -> None:
-    BRAND_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    BRAND_SETTINGS_PATH.write_text(json.dumps({"logo_url": url}, ensure_ascii=False), encoding="utf-8")
+    with Session(engine) as session:
+        setting = session.exec(select(AppConfig).where(AppConfig.key == BRAND_LOGO_CONFIG_KEY)).first()
+        if setting is None:
+            setting = AppConfig(key=BRAND_LOGO_CONFIG_KEY, value=url)
+        else:
+            setting.value = url
+        session.add(setting)
+        session.commit()
 
 
 def _normalize_upload_path(value: str | None) -> str:
-    if not value:
-        return ""
-    return value.replace("/uploaded_files/", "").lstrip("/")
+    return normalize_media_url(value)
 
 
 def _parse_delivery_date(value: str) -> date:
@@ -1681,14 +1697,7 @@ class CatalogAdminState(rx.State):
         self.show_technical_error = not self.show_technical_error
 
     async def _save_upload(self, file: rx.UploadFile, folder: str) -> str:
-        upload_dir = Path(rx.get_upload_dir()) / folder
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = "".join(char for char in file.filename if char.isalnum() or char in {".", "-", "_"})
-        filename = f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}_{safe_name}"
-        path = upload_dir / filename
-        content = await file.read()
-        path.write_bytes(content)
-        return f"{folder}/{filename}"
+        return await save_media_upload(file, folder)
 
 
 class AdminCrudState(rx.State):

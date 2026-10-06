@@ -13,7 +13,6 @@ services:
       TRANSFER_ALIAS: ${TRANSFER_ALIAS:-marquezale.uala}
       REFLEX_APP_NAME: ${REFLEX_APP_NAME:-gastroflow}
       REFLEX_FRONTEND_PORT: ${REFLEX_FRONTEND_PORT:-3000}
-      REFLEX_BACKEND_PORT: ${REFLEX_BACKEND_PORT:-8000}
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-gastroflow}
@@ -22,13 +21,12 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gastroflow}:${POSTGRES_PASSWORD:-gastroflow}@db:5432/${POSTGRES_DB:-gastroflow}
     ports:
       - "${REFLEX_FRONTEND_PORT:-3000}:3000"
-      - "${REFLEX_BACKEND_PORT:-8000}:8000"
     volumes:
       - .:/app
     depends_on:
       db:
         condition: service_healthy
-    command: reflex run --env dev --frontend-port 3000 --backend-port 8000 --backend-host 0.0.0.0
+    command: reflex run --env prod --frontend-port 3000 --backend-host 0.0.0.0
 
   db:
     image: postgres:16-alpine

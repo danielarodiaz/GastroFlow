@@ -40,11 +40,11 @@ docker compose up --build
 Servicios:
 
 - App Reflex: http://localhost:3000
-- Backend Reflex/WebSocket: http://localhost:8000
 - Postgres para herramientas locales: localhost:5433
 
 El puerto externo `5433` evita chocar con instalaciones locales de PostgreSQL que suelen usar `5432`.
 Dentro de Docker, la app se conecta al servicio `db` por el puerto interno `5432`.
+Reflex corre en modo produccion y sirve frontend/backend desde el mismo origen, por eso solo se publica el puerto `3000`.
 
 ## Apagar el entorno
 

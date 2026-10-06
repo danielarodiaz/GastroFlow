@@ -8,5 +8,7 @@ __pycache__
 .web
 node_modules
 data
+uploaded_files
+reflex.db
 *.log
 .env

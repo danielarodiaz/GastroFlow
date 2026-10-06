@@ -36,7 +36,7 @@ def page_bg(*children: rx.Component) -> rx.Component:
 def logo_mark(size: str = "3rem") -> rx.Component:
     return rx.cond(
         BrandState.logo_url != "",
-        rx.image(src=rx.get_upload_url(BrandState.logo_url), width=size, height=size, border_radius="999px", object_fit="cover"),
+        rx.image(src=BrandState.logo_url, width=size, height=size, border_radius="999px", object_fit="cover"),
         rx.center(
             rx.text("GF", font_family=FONT_STACK, font_weight="900", color=CREAM),
             width=size,
@@ -207,7 +207,7 @@ def category_card(category: rx.Var[dict]) -> rx.Component:
         rx.vstack(
             rx.cond(
                 category["foto"] != "",
-                rx.image(src=rx.get_upload_url(category["foto"]), width="100%", height="112px", object_fit="cover", border_radius="14px"),
+                rx.image(src=category["foto"], width="100%", height="112px", object_fit="cover", border_radius="14px"),
                 food_visual(category["nombre"], "112px"),
             ),
             rx.text(category["nombre"], font_family=FONT_STACK, font_size="1.4rem", color=GREEN, font_weight="900"),
@@ -240,7 +240,7 @@ def product_image(product: rx.Var[dict], height: str = "150px") -> rx.Component:
     return rx.cond(
         product["foto"] != "",
         rx.image(
-            src=rx.get_upload_url(product["foto"]),
+            src=product["foto"],
             width="100%",
             height=height,
             object_fit="cover",
@@ -1152,7 +1152,7 @@ def admin_category_card(category: rx.Var[dict]) -> rx.Component:
         rx.vstack(
             rx.cond(
                 category["foto"] != "",
-                rx.image(src=rx.get_upload_url(category["foto"]), width="100%", height="110px", object_fit="cover", border_radius="12px"),
+                rx.image(src=category["foto"], width="100%", height="110px", object_fit="cover", border_radius="12px"),
                 food_visual(category["nombre"], "110px"),
             ),
             rx.hstack(
@@ -1178,7 +1178,7 @@ def admin_product_card(product: rx.Var[dict]) -> rx.Component:
         rx.vstack(
             rx.cond(
                 product["foto"] != "",
-                rx.image(src=rx.get_upload_url(product["foto"]), width="100%", height="120px", object_fit="cover", border_radius="12px"),
+                rx.image(src=product["foto"], width="100%", height="120px", object_fit="cover", border_radius="12px"),
                 food_visual(product["nombre"], "120px"),
             ),
             rx.hstack(
@@ -1362,7 +1362,7 @@ def catalog_admin_page() -> rx.Component:
             rx.hstack(
                 rx.cond(
                     CatalogAdminState.logo_url != "",
-                    rx.image(src=rx.get_upload_url(CatalogAdminState.logo_url), width="72px", height="72px", object_fit="cover", border_radius="999px"),
+                    rx.image(src=CatalogAdminState.logo_url, width="72px", height="72px", object_fit="cover", border_radius="999px"),
                     logo_mark("72px"),
                 ),
                 rx.vstack(
