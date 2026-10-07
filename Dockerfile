@@ -25,4 +25,4 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD curl -f http://127.0.0.1:3000/ping || exit 1
 
-CMD ["reflex", "run", "--env", "prod", "--single-port", "--frontend-port", "3000", "--backend-host", "0.0.0.0"]
+CMD ["reflex", "run", "--env", "prod", "--single-port", "--backend-port", "3000", "--backend-host", "0.0.0.0"]
