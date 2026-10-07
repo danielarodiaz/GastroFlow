@@ -1570,7 +1570,12 @@ def admin_page() -> rx.Component:
     )
 
 
+def health_page() -> rx.Component:
+    return rx.text("ok")
+
+
 app = rx.App()
+app.add_page(health_page, route="/ping")
 app.add_page(public_page, route="/", on_load=PublicOrderState.load_catalog)
 app.add_page(login_page, route="/login", on_load=AuthState.clear_message)
 app.add_page(orders_page, route="/pedidos", on_load=OperationsState.load_orders)
