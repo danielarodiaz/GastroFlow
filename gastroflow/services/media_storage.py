@@ -28,13 +28,22 @@ async def save_media_upload(file: rx.UploadFile, folder: str) -> str:
     filename = f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}_{safe_name}"
     content = await file.read()
 
+    return save_media_bytes(
+        content=content,
+        folder=folder,
+        filename=filename,
+        content_type=file.content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream",
+    )
+
+
+def save_media_bytes(*, content: bytes, folder: str, filename: str, content_type: str) -> str:
     settings = get_settings()
     if settings.media_storage_backend.lower() == "supabase":
         return _upload_to_supabase(
             content=content,
             folder=folder,
             filename=filename,
-            content_type=file.content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream",
+            content_type=content_type,
         )
 
     upload_dir = Path(rx.get_upload_dir()) / folder
@@ -45,8 +54,14 @@ async def save_media_upload(file: rx.UploadFile, folder: str) -> str:
 
 def _upload_to_supabase(*, content: bytes, folder: str, filename: str, content_type: str) -> str:
     settings = get_settings()
-    if not settings.supabase_url or not settings.supabase_service_role_key:
-        raise RuntimeError("Supabase Storage requiere SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY.")
+    supabase_key = settings.supabase_service_role_key or settings.supabase_key
+    if not settings.supabase_url or not supabase_key:
+        raise RuntimeError("Supabase Storage requiere SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY o SUPABASE_KEY.")
+    if supabase_key.startswith(("sb_publishable", "sb_anon")):
+        raise RuntimeError(
+            "Supabase Storage requiere una service_role key para subir archivos desde el servidor. "
+            "La publishable/anon key solo sirve para operaciones permitidas por politicas publicas."
+        )
 
     base_url = settings.supabase_url.rstrip("/")
     bucket = settings.supabase_storage_bucket.strip("/")
@@ -59,8 +74,8 @@ def _upload_to_supabase(*, content: bytes, folder: str, filename: str, content_t
         data=content,
         method="POST",
         headers={
-            "apikey": settings.supabase_service_role_key,
-            "Authorization": f"Bearer {settings.supabase_service_role_key}",
+            "apikey": supabase_key,
+            "Authorization": f"Bearer {supabase_key}",
             "Content-Type": content_type,
             "x-upsert": "true",
         },

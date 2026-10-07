@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     database_url: str
     media_storage_backend: str = "local"
     supabase_url: str | None = None
+    supabase_key: str | None = None
     supabase_service_role_key: str | None = None
     supabase_storage_bucket: str = "gastroflow-media"
 

@@ -87,3 +87,13 @@ Probar:
 - `/admin`
 
 Luego subir una imagen desde `/catalogo-admin`, redeployar el servicio y confirmar que la imagen sigue visible. Si sigue visible, Supabase Storage quedo funcionando y no hay dependencia de `uploaded_files`.
+
+Tambien se puede automatizar parte de la verificacion con:
+
+```bash
+python -m scripts.verify_deploy https://<url-publica-northflank>
+python -m scripts.smoke_media_storage
+```
+
+`verify_deploy` comprueba rutas publicas y `smoke_media_storage` sube un archivo chico al backend de media configurado por variables de entorno.
+`SUPABASE_KEY` tambien es aceptado como alias de `SUPABASE_SERVICE_ROLE_KEY`, pero debe ser una service role key. No usar `sb_publishable...` ni anon key para subidas desde el servidor.
