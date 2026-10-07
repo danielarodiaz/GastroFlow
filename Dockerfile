@@ -16,9 +16,13 @@ RUN pip install --upgrade pip \
 
 COPY . .
 
+RUN APP_SECRET_KEY=build-time-secret \
+    DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/database \
+    reflex compile --loglevel warning --no-rich
+
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD curl -f http://127.0.0.1:3000/ping || exit 1
 
-CMD ["reflex", "run", "--env", "prod", "--frontend-port", "3000", "--backend-host", "0.0.0.0"]
+CMD ["reflex", "run", "--env", "prod", "--single-port", "--frontend-port", "3000", "--backend-host", "0.0.0.0"]
