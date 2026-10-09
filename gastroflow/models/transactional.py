@@ -115,14 +115,11 @@ class PedidoItemRead(PedidoItemBase):
 class GastoBase(SQLModel):
     codigo: str = Field(index=True, unique=True, max_length=30)
     fecha: date
-    motivo_gasto_id: int = Field(foreign_key="motivo_gasto.id")
-    marca_id: int = Field(foreign_key="marca.id")
-    cantidad: Decimal = Field(sa_column=quantity_column())
-    unidad_medida: str = Field(max_length=40)
-    precio: Decimal = Field(sa_column=money_column())
     lugar_texto: str
     lugar_lat: Optional[Decimal] = Field(default=None, sa_column=coordinate_column())
     lugar_lng: Optional[Decimal] = Field(default=None, sa_column=coordinate_column())
+    observaciones: Optional[str] = None
+    monto_total: Decimal = Field(sa_column=money_column())
 
 
 class Gasto(GastoBase, IdMixin, table=True):
@@ -140,3 +137,26 @@ class GastoRead(GastoBase):
     id: int
     created_at: datetime
     updated_at: datetime
+
+
+class GastoDetalleBase(SQLModel):
+    gasto_id: int = Field(foreign_key="gasto.id", index=True)
+    motivo_gasto_id: int = Field(foreign_key="motivo_gasto.id")
+    marca_id: int = Field(foreign_key="marca.id")
+    descripcion: Optional[str] = None
+    cantidad: Decimal = Field(sa_column=quantity_column())
+    unidad_medida: str = Field(max_length=40)
+    precio_unitario: Decimal = Field(sa_column=money_column())
+    subtotal: Decimal = Field(sa_column=money_column())
+
+
+class GastoDetalle(GastoDetalleBase, IdMixin, table=True):
+    __tablename__ = "gasto_detalle"
+
+
+class GastoDetalleCreate(GastoDetalleBase):
+    pass
+
+
+class GastoDetalleRead(GastoDetalleBase):
+    id: int

@@ -3,14 +3,15 @@ from __future__ import annotations
 import mimetypes
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-import reflex as rx
-from reflex.constants import Endpoint
-
 from gastroflow.config.settings import get_settings
+
+if TYPE_CHECKING:
+    import reflex as rx
 
 
 def normalize_media_url(value: str | None) -> str:
@@ -19,11 +20,13 @@ def normalize_media_url(value: str | None) -> str:
     clean = value.strip()
     if clean.startswith(("http://", "https://")):
         return clean
+    from reflex.constants import Endpoint
+
     path = clean.replace("/uploaded_files/", "").lstrip("/")
     return f"{Endpoint.UPLOAD.get_url().rstrip('/')}/{path}"
 
 
-async def save_media_upload(file: rx.UploadFile, folder: str) -> str:
+async def save_media_upload(file: "rx.UploadFile", folder: str) -> str:
     safe_name = "".join(char for char in file.filename if char.isalnum() or char in {".", "-", "_"})
     filename = f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}_{safe_name}"
     content = await file.read()
@@ -46,7 +49,7 @@ def save_media_bytes(*, content: bytes, folder: str, filename: str, content_type
             content_type=content_type,
         )
 
-    upload_dir = Path(rx.get_upload_dir()) / folder
+    upload_dir = Path("uploaded_files") / folder
     upload_dir.mkdir(parents=True, exist_ok=True)
     (upload_dir / filename).write_bytes(content)
     return f"{folder}/{filename}"

@@ -12,6 +12,7 @@ from gastroflow.models import (
     Cliente,
     ComboRegla,
     Gasto,
+    GastoDetalle,
     Marca,
     MotivoGasto,
     Pedido,
@@ -50,6 +51,7 @@ CRUD_TABLES: dict[str, TableConfig] = {
     "pedido": TableConfig(Pedido),
     "pedido_item": TableConfig(PedidoItem),
     "gasto": TableConfig(Gasto),
+    "gasto_detalle": TableConfig(GastoDetalle),
 }
 
 

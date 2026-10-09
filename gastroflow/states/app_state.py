@@ -22,6 +22,7 @@ from gastroflow.models import (
     Categoria,
     Cliente,
     Gasto,
+    GastoDetalle,
     Pedido,
     PedidoItem,
     Producto,
@@ -880,29 +881,38 @@ class ExpenseState(rx.State):
         self.message = ""
         with Session(engine) as session:
             gastos = session.exec(select(Gasto)).all()
+            detalles = session.exec(select(GastoDetalle)).all()
             motivos = {motivo.id: motivo for motivo in session.exec(select(MotivoGasto)).all()}
             marcas = {marca.id: marca for marca in session.exec(select(Marca)).all()}
 
+        details_by_expense: dict[int, list[GastoDetalle]] = {}
+        for detail in detalles:
+            details_by_expense.setdefault(detail.gasto_id, []).append(detail)
         rows = [
             {
                 "id": gasto.id,
+                "detail_id": detail.id,
                 "codigo": gasto.codigo,
                 "fecha": _date_text(gasto.fecha),
                 "fecha_key": gasto.fecha.isoformat(),
                 "mes": gasto.fecha.strftime("%Y-%m"),
-                "motivo": motivos[gasto.motivo_gasto_id].nombre if gasto.motivo_gasto_id in motivos else "",
-                "marca": marcas[gasto.marca_id].nombre if gasto.marca_id in marcas else "",
-                "cantidad": str(gasto.cantidad),
-                "cantidad_display": _quantity_text(gasto.cantidad),
-                "unidad": gasto.unidad_medida,
-                "precio": str(gasto.precio),
-                "precio_display": _money_text(gasto.precio),
+                "motivo": motivos[detail.motivo_gasto_id].nombre if detail.motivo_gasto_id in motivos else "",
+                "marca": marcas[detail.marca_id].nombre if detail.marca_id in marcas else "",
+                "descripcion": detail.descripcion or "",
+                "cantidad": str(detail.cantidad),
+                "cantidad_display": _quantity_text(detail.cantidad),
+                "unidad": detail.unidad_medida,
+                "precio": str(detail.precio_unitario),
+                "precio_display": _money_text(detail.precio_unitario),
+                "subtotal": str(detail.subtotal),
+                "subtotal_display": _money_text(detail.subtotal),
                 "lugar": gasto.lugar_texto,
             }
             for gasto in gastos
+            for detail in details_by_expense.get(gasto.id or 0, [])
         ]
         filtered = [row for row in rows if self._matches_expense_filters(row)]
-        total = sum((Decimal(str(row["precio"])) for row in filtered), Decimal("0.00"))
+        total = sum((Decimal(str(row["subtotal"])) for row in filtered), Decimal("0.00"))
         average = total / Decimal(len(filtered)) if filtered else Decimal("0.00")
         self.expense_rows = filtered
         self.expenses = filtered
@@ -1029,14 +1039,33 @@ class ExpenseState(rx.State):
                         raise ValueError("Gasto inexistente.")
                     motivo = ExpenseService(session)._get_or_create_motivo(self.motivo_nombre)
                     marca = ExpenseService(session)._get_or_create_marca(self.marca_nombre)
+                    detail = session.exec(
+                        select(GastoDetalle).where(GastoDetalle.gasto_id == gasto.id).order_by(GastoDetalle.id)
+                    ).first()
                     gasto.fecha = expense_date
-                    gasto.motivo_gasto_id = motivo.id or 0
-                    gasto.marca_id = marca.id or 0
-                    gasto.cantidad = _parse_quantity_input(self.cantidad)
-                    gasto.unidad_medida = _upper_text(self.unidad_medida)
-                    gasto.precio = _parse_money_input(self.precio)
                     gasto.lugar_texto = _upper_text(self.lugar_texto)
+                    cantidad = _parse_quantity_input(self.cantidad)
+                    precio_unitario = _parse_money_input(self.precio)
+                    subtotal = (cantidad * precio_unitario).quantize(MONEY_QUANT)
+                    if detail is None:
+                        detail = GastoDetalle(
+                            gasto_id=gasto.id or 0,
+                            motivo_gasto_id=motivo.id or 0,
+                            marca_id=marca.id or 0,
+                            cantidad=cantidad,
+                            unidad_medida=_upper_text(self.unidad_medida),
+                            precio_unitario=precio_unitario,
+                            subtotal=subtotal,
+                        )
+                    detail.motivo_gasto_id = motivo.id or 0
+                    detail.marca_id = marca.id or 0
+                    detail.cantidad = cantidad
+                    detail.unidad_medida = _upper_text(self.unidad_medida)
+                    detail.precio_unitario = precio_unitario
+                    detail.subtotal = (detail.cantidad * detail.precio_unitario).quantize(MONEY_QUANT)
+                    gasto.monto_total = detail.subtotal
                     session.add(gasto)
+                    session.add(detail)
                     session.commit()
                     message = f"Gasto {gasto.codigo} modificado."
                 else:
@@ -1072,6 +1101,8 @@ class ExpenseState(rx.State):
                 if gasto is None:
                     raise ValueError("Gasto inexistente.")
                 code = gasto.codigo
+                for detail in session.exec(select(GastoDetalle).where(GastoDetalle.gasto_id == gasto.id)).all():
+                    session.delete(detail)
                 session.delete(gasto)
                 session.commit()
             self.pending_delete_id = ""
