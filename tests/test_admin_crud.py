@@ -21,6 +21,7 @@ def test_crud_registry_contains_all_model_tables() -> None:
         "pedido",
         "pedido_item",
         "gasto",
+        "gasto_detalle",
     }
 
 

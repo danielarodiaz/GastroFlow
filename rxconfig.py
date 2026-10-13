@@ -1,10 +1,12 @@
+import os
+
 import reflex as rx
 from reflex.plugins.tailwind_v3 import TailwindV3Plugin
 
 
 config = rx.Config(
-    app_name="gastroflow",
-    app_module_import="gastroflow.app",
+    app_name=os.getenv("REFLEX_APP_NAME", "gastroflow"),
+    app_module_import=os.getenv("REFLEX_APP_MODULE_IMPORT", "gastroflow.app"),
     frontend_port=3000,
     backend_port=8000,
     backend_host="0.0.0.0",

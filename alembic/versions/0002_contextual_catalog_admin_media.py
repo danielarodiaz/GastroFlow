@@ -3,13 +3,20 @@
 Revision ID: 0002_catalog_media
 Revises: 0001_initial_schema
 Create Date: 2026-10-02 00:00:00
+
+This revision is intentionally defensive. The current baseline migration already
+contains part of this schema, while older local databases may still need the
+incremental changes. Keep this file idempotent so a fresh Supabase database can
+run the full Alembic chain from base to head.
 """
+
+from __future__ import annotations
 
 from collections.abc import Sequence
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
+from sqlalchemy import inspect
 
 revision: str = "0002_catalog_media"
 down_revision: str | None = "0001_initial_schema"
@@ -17,16 +24,66 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _inspector() -> sa.Inspector:
+    return inspect(op.get_bind())
+
+
+def _has_table(table_name: str) -> bool:
+    return table_name in _inspector().get_table_names()
+
+
+def _has_column(table_name: str, column_name: str) -> bool:
+    if not _has_table(table_name):
+        return False
+    return column_name in {column["name"] for column in _inspector().get_columns(table_name)}
+
+
+def _has_index(table_name: str, index_name: str) -> bool:
+    if not _has_table(table_name):
+        return False
+    return index_name in {index["name"] for index in _inspector().get_indexes(table_name)}
+
+
+def _has_foreign_key(table_name: str, constraint_name: str) -> bool:
+    if not _has_table(table_name):
+        return False
+    return constraint_name in {fk["name"] for fk in _inspector().get_foreign_keys(table_name)}
+
+
+def _add_column_if_missing(table_name: str, column: sa.Column) -> None:
+    if not _has_column(table_name, column.name):
+        op.add_column(table_name, column)
+
+
+def _drop_column_if_present(table_name: str, column_name: str) -> None:
+    if _has_column(table_name, column_name):
+        op.drop_column(table_name, column_name)
+
+
+def _create_index_if_missing(table_name: str, index_name: str, columns: list[str], *, unique: bool = False) -> None:
+    if not _has_index(table_name, index_name):
+        op.create_index(index_name, table_name, columns, unique=unique)
+
+
 def upgrade() -> None:
-    op.add_column("categoria", sa.Column("descripcion_publica", sa.String(), nullable=True))
-    op.add_column("categoria", sa.Column("foto_url", sa.String(length=500), nullable=True))
-    op.add_column("categoria", sa.Column("orden", sa.Integer(), nullable=False, server_default="0"))
-    op.add_column("categoria", sa.Column("visible_cliente", sa.Boolean(), nullable=False, server_default=sa.true()))
-    op.add_column("categoria", sa.Column("es_automatica", sa.Boolean(), nullable=False, server_default=sa.false()))
-    op.add_column("categoria", sa.Column("cantidad_minima_total", sa.Integer(), nullable=True))
-    op.add_column("categoria", sa.Column("prioridad", sa.Integer(), nullable=False, server_default="0"))
-    op.add_column("categoria", sa.Column("acumulable", sa.Boolean(), nullable=False, server_default=sa.false()))
-    op.add_column("categoria", sa.Column("activa", sa.Boolean(), nullable=False, server_default=sa.true()))
+    _add_column_if_missing("categoria", sa.Column("descripcion_publica", sa.String(), nullable=True))
+    _add_column_if_missing("categoria", sa.Column("foto_url", sa.String(length=500), nullable=True))
+    _add_column_if_missing("categoria", sa.Column("orden", sa.Integer(), nullable=False, server_default="0"))
+    _add_column_if_missing(
+        "categoria",
+        sa.Column("visible_cliente", sa.Boolean(), nullable=False, server_default=sa.true()),
+    )
+    _add_column_if_missing(
+        "categoria",
+        sa.Column("es_automatica", sa.Boolean(), nullable=False, server_default=sa.false()),
+    )
+    _add_column_if_missing("categoria", sa.Column("cantidad_minima_total", sa.Integer(), nullable=True))
+    _add_column_if_missing("categoria", sa.Column("prioridad", sa.Integer(), nullable=False, server_default="0"))
+    _add_column_if_missing(
+        "categoria",
+        sa.Column("acumulable", sa.Boolean(), nullable=False, server_default=sa.false()),
+    )
+    _add_column_if_missing("categoria", sa.Column("activa", sa.Boolean(), nullable=False, server_default=sa.true()))
 
     op.execute(
         """
@@ -50,59 +107,63 @@ def upgrade() -> None:
         """
     )
 
-    op.create_table(
-        "producto_categoria",
-        sa.Column("producto_id", sa.Integer(), nullable=False),
-        sa.Column("categoria_id", sa.Integer(), nullable=False),
-        sa.Column("precio", sa.Numeric(12, 2), nullable=False),
-        sa.Column("descripcion_publica", sa.String(), nullable=True),
-        sa.Column("foto_url", sa.String(length=500), nullable=True),
-        sa.Column("visible", sa.Boolean(), nullable=False, server_default=sa.true()),
-        sa.Column("orden", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("destacado", sa.Boolean(), nullable=False, server_default=sa.false()),
-        sa.Column("activo", sa.Boolean(), nullable=False, server_default=sa.true()),
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.ForeignKeyConstraint(["categoria_id"], ["categoria.id"]),
-        sa.ForeignKeyConstraint(["producto_id"], ["producto.id"]),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("producto_id", "categoria_id", name="uq_producto_categoria"),
-    )
-    op.create_index("ix_producto_categoria_categoria_id", "producto_categoria", ["categoria_id"])
-    op.create_index("ix_producto_categoria_producto_id", "producto_categoria", ["producto_id"])
+    if not _has_table("producto_categoria"):
+        op.create_table(
+            "producto_categoria",
+            sa.Column("producto_id", sa.Integer(), nullable=False),
+            sa.Column("categoria_id", sa.Integer(), nullable=False),
+            sa.Column("precio", sa.Numeric(12, 2), nullable=False),
+            sa.Column("descripcion_publica", sa.String(), nullable=True),
+            sa.Column("foto_url", sa.String(length=500), nullable=True),
+            sa.Column("visible", sa.Boolean(), nullable=False, server_default=sa.true()),
+            sa.Column("orden", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column("destacado", sa.Boolean(), nullable=False, server_default=sa.false()),
+            sa.Column("activo", sa.Boolean(), nullable=False, server_default=sa.true()),
+            sa.Column("id", sa.Integer(), nullable=False),
+            sa.ForeignKeyConstraint(["categoria_id"], ["categoria.id"]),
+            sa.ForeignKeyConstraint(["producto_id"], ["producto.id"]),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint("producto_id", "categoria_id", name="uq_producto_categoria"),
+        )
+    _create_index_if_missing("producto_categoria", "ix_producto_categoria_categoria_id", ["categoria_id"])
+    _create_index_if_missing("producto_categoria", "ix_producto_categoria_producto_id", ["producto_id"])
 
-    op.execute(
-        """
-        INSERT INTO producto_categoria (producto_id, categoria_id, precio, activo, visible, orden, destacado)
-        SELECT id, categoria_id, precio, true, true, 0, false
-        FROM producto
-        WHERE categoria_id IS NOT NULL
-        """
-    )
-    op.execute(
-        """
-        INSERT INTO producto_categoria (producto_id, categoria_id, precio, activo, visible, orden, destacado)
-        SELECT pmp.producto_id, c.id, pmp.precio_unitario_mayorista, true, false, 0, false
-        FROM precio_mayorista_producto pmp
-        JOIN regla_mayorista rm ON rm.id = pmp.regla_mayorista_id
-        JOIN categoria c ON c.codigo = 'MAYORISTA'
-        ON CONFLICT ON CONSTRAINT uq_producto_categoria DO NOTHING
-        """
-    )
+    if _has_column("producto", "categoria_id") and _has_column("producto", "precio"):
+        op.execute(
+            """
+            INSERT INTO producto_categoria (producto_id, categoria_id, precio, activo, visible, orden, destacado)
+            SELECT id, categoria_id, precio, true, true, 0, false
+            FROM producto
+            WHERE categoria_id IS NOT NULL
+            ON CONFLICT ON CONSTRAINT uq_producto_categoria DO NOTHING
+            """
+        )
 
-    op.add_column("producto", sa.Column("activo", sa.Boolean(), nullable=False, server_default=sa.true()))
-    op.create_index("ix_producto_nombre", "producto", ["nombre"], unique=False)
-    op.drop_constraint("producto_categoria_id_fkey", "producto", type_="foreignkey")
-    op.drop_column("producto", "categoria_id")
-    op.drop_column("producto", "precio")
+    if _has_table("precio_mayorista_producto") and _has_table("regla_mayorista"):
+        op.execute(
+            """
+            INSERT INTO producto_categoria (producto_id, categoria_id, precio, activo, visible, orden, destacado)
+            SELECT pmp.producto_id, c.id, pmp.precio_unitario_mayorista, true, false, 0, false
+            FROM precio_mayorista_producto pmp
+            JOIN regla_mayorista rm ON rm.id = pmp.regla_mayorista_id
+            JOIN categoria c ON c.codigo = 'MAYORISTA'
+            ON CONFLICT ON CONSTRAINT uq_producto_categoria DO NOTHING
+            """
+        )
+
+    _add_column_if_missing("producto", sa.Column("activo", sa.Boolean(), nullable=False, server_default=sa.true()))
+    _create_index_if_missing("producto", "ix_producto_nombre", ["nombre"])
+    if _has_foreign_key("producto", "producto_categoria_id_fkey"):
+        op.drop_constraint("producto_categoria_id_fkey", "producto", type_="foreignkey")
+    _drop_column_if_present("producto", "categoria_id")
+    _drop_column_if_present("producto", "precio")
 
     op.execute("DROP INDEX IF EXISTS ix_marca_nombre")
-    op.create_index("ix_marca_nombre", "marca", ["nombre"], unique=False)
+    _create_index_if_missing("marca", "ix_marca_nombre", ["nombre"])
     op.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_marca_nombre_lower ON marca (LOWER(nombre))")
     op.execute("DROP INDEX IF EXISTS ix_motivo_gasto_nombre")
-    op.create_index("ix_motivo_gasto_nombre", "motivo_gasto", ["nombre"], unique=False)
-    op.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_motivo_gasto_nombre_lower ON motivo_gasto (LOWER(nombre))"
-    )
+    _create_index_if_missing("motivo_gasto", "ix_motivo_gasto_nombre", ["nombre"])
+    op.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_motivo_gasto_nombre_lower ON motivo_gasto (LOWER(nombre))")
 
     op.execute("DROP TABLE IF EXISTS precio_mayorista_producto")
     op.execute("DROP TABLE IF EXISTS regla_mayorista")
@@ -112,8 +173,8 @@ def upgrade() -> None:
         "GREATEST(producto_a_id, producto_b_id))"
     )
 
-    op.add_column("pedido_item", sa.Column("categoria_venta_id", sa.Integer(), nullable=True))
-    op.add_column("pedido_item", sa.Column("subtotal", sa.Numeric(12, 2), nullable=True))
+    _add_column_if_missing("pedido_item", sa.Column("categoria_venta_id", sa.Integer(), nullable=True))
+    _add_column_if_missing("pedido_item", sa.Column("subtotal", sa.Numeric(12, 2), nullable=True))
     op.execute(
         """
         UPDATE pedido_item pi
@@ -133,94 +194,36 @@ def upgrade() -> None:
     )
     op.alter_column("pedido_item", "categoria_venta_id", nullable=False)
     op.alter_column("pedido_item", "subtotal", nullable=False)
-    op.create_foreign_key(
-        "pedido_item_categoria_venta_id_fkey",
-        "pedido_item",
-        "categoria",
-        ["categoria_venta_id"],
-        ["id"],
-    )
-    op.create_index("ix_pedido_item_pedido_id", "pedido_item", ["pedido_id"])
+    if not _has_foreign_key("pedido_item", "pedido_item_categoria_venta_id_fkey"):
+        op.create_foreign_key(
+            "pedido_item_categoria_venta_id_fkey",
+            "pedido_item",
+            "categoria",
+            ["categoria_venta_id"],
+            ["id"],
+        )
+    _create_index_if_missing("pedido_item", "ix_pedido_item_pedido_id", ["pedido_id"])
 
-    op.alter_column("categoria", "orden", server_default=None)
-    op.alter_column("categoria", "visible_cliente", server_default=None)
-    op.alter_column("categoria", "es_automatica", server_default=None)
-    op.alter_column("categoria", "prioridad", server_default=None)
-    op.alter_column("categoria", "acumulable", server_default=None)
-    op.alter_column("categoria", "activa", server_default=None)
-    op.alter_column("producto", "activo", server_default=None)
-    op.alter_column("producto_categoria", "visible", server_default=None)
-    op.alter_column("producto_categoria", "orden", server_default=None)
-    op.alter_column("producto_categoria", "destacado", server_default=None)
-    op.alter_column("producto_categoria", "activo", server_default=None)
+    for table_name, column_name in (
+        ("categoria", "orden"),
+        ("categoria", "visible_cliente"),
+        ("categoria", "es_automatica"),
+        ("categoria", "prioridad"),
+        ("categoria", "acumulable"),
+        ("categoria", "activa"),
+        ("producto", "activo"),
+        ("producto_categoria", "visible"),
+        ("producto_categoria", "orden"),
+        ("producto_categoria", "destacado"),
+        ("producto_categoria", "activo"),
+    ):
+        if _has_column(table_name, column_name):
+            op.alter_column(table_name, column_name, server_default=None)
 
 
 def downgrade() -> None:
-    op.drop_index("ix_pedido_item_pedido_id", table_name="pedido_item")
-    op.drop_constraint("pedido_item_categoria_venta_id_fkey", "pedido_item", type_="foreignkey")
-    op.drop_column("pedido_item", "subtotal")
-    op.drop_column("pedido_item", "categoria_venta_id")
-
-    op.execute("DROP INDEX IF EXISTS uq_combo_regla_par")
-    op.create_table(
-        "regla_mayorista",
-        sa.Column("codigo", sa.String(length=80), nullable=False),
-        sa.Column("categoria_id", sa.Integer(), nullable=False),
-        sa.Column("nombre", sa.String(length=160), nullable=False),
-        sa.Column("cantidad_minima_total", sa.Integer(), nullable=False),
-        sa.Column("activa", sa.Boolean(), nullable=False),
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.ForeignKeyConstraint(["categoria_id"], ["categoria.id"]),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index("ix_regla_mayorista_codigo", "regla_mayorista", ["codigo"], unique=True)
-    op.create_table(
-        "precio_mayorista_producto",
-        sa.Column("regla_mayorista_id", sa.Integer(), nullable=False),
-        sa.Column("producto_id", sa.Integer(), nullable=False),
-        sa.Column("precio_unitario_mayorista", sa.Numeric(12, 2), nullable=False),
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.ForeignKeyConstraint(["producto_id"], ["producto.id"]),
-        sa.ForeignKeyConstraint(["regla_mayorista_id"], ["regla_mayorista.id"]),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("regla_mayorista_id", "producto_id"),
-    )
-
-    op.add_column("producto", sa.Column("precio", sa.Numeric(12, 2), nullable=True))
-    op.add_column("producto", sa.Column("categoria_id", sa.Integer(), nullable=True))
-    op.execute(
-        """
-        UPDATE producto p
-        SET precio = pc.precio,
-            categoria_id = pc.categoria_id
-        FROM producto_categoria pc
-        WHERE pc.producto_id = p.id
-          AND p.precio IS NULL
-        """
-    )
-    op.alter_column("producto", "precio", nullable=False)
-    op.alter_column("producto", "categoria_id", nullable=False)
-    op.create_foreign_key("producto_categoria_id_fkey", "producto", "categoria", ["categoria_id"], ["id"])
-    op.drop_index("ix_producto_nombre", table_name="producto")
-    op.drop_column("producto", "activo")
-
-    op.drop_index("ix_producto_categoria_producto_id", table_name="producto_categoria")
-    op.drop_index("ix_producto_categoria_categoria_id", table_name="producto_categoria")
-    op.drop_table("producto_categoria")
-
-    op.execute("DROP INDEX IF EXISTS uq_motivo_gasto_nombre_lower")
-    op.drop_index("ix_motivo_gasto_nombre", table_name="motivo_gasto")
-    op.create_index("ix_motivo_gasto_nombre", "motivo_gasto", ["nombre"], unique=True)
-    op.execute("DROP INDEX IF EXISTS uq_marca_nombre_lower")
-    op.drop_index("ix_marca_nombre", table_name="marca")
-    op.create_index("ix_marca_nombre", "marca", ["nombre"], unique=True)
-
-    op.drop_column("categoria", "activa")
-    op.drop_column("categoria", "acumulable")
-    op.drop_column("categoria", "prioridad")
-    op.drop_column("categoria", "cantidad_minima_total")
-    op.drop_column("categoria", "es_automatica")
-    op.drop_column("categoria", "visible_cliente")
-    op.drop_column("categoria", "orden")
-    op.drop_column("categoria", "foto_url")
-    op.drop_column("categoria", "descripcion_publica")
+    # This revision is kept as a compatibility bridge between an older
+    # incremental schema and the current squashed baseline. Downgrading it
+    # safely would require knowing which baseline created each column/table,
+    # so the downgrade is intentionally a no-op.
+    pass

@@ -18,8 +18,9 @@ pedido 1 ── * pedido_item
 producto 1 ── * pedido_item.producto
 producto 1 ── * pedido_item.producto_combo
 
-motivo_gasto 1 ── * gasto
-marca 1 ── * gasto
+gasto 1 ── * gasto_detalle
+motivo_gasto 1 ── * gasto_detalle
+marca 1 ── * gasto_detalle
 
 usuario
 ```
@@ -237,16 +238,29 @@ Antes de crear un cliente desde el formulario publico se hace upsert por telefon
 | id | int | PK tecnica autoincremental |
 | codigo | str | Unico, indexado, formato `GAS-0001` |
 | fecha | date | Requerido |
-| motivo_gasto_id | int | FK a `motivo_gasto.id` |
-| marca_id | int | FK a `marca.id` |
-| cantidad | Decimal | NUMERIC |
-| unidad_medida | str | Ej. `kg`, `unidad`, `litro` |
-| precio | Decimal | NUMERIC |
 | lugar_texto | str | Requerido |
 | lugar_lat | Decimal null | Coordenada opcional |
 | lugar_lng | Decimal null | Coordenada opcional |
+| observaciones | str null | Texto libre del ticket |
+| monto_total | Decimal | Suma de subtotales de `gasto_detalle` |
 | created_at | datetime | Requerido |
 | updated_at | datetime | Requerido |
+
+`gasto` representa la cabecera de un ticket de compra: fecha, lugar, ubicacion opcional y total.
+
+### gasto_detalle
+
+| Campo | Tipo | Reglas |
+| --- | --- | --- |
+| id | int | PK tecnica autoincremental |
+| gasto_id | int | FK a `gasto.id` |
+| motivo_gasto_id | int | FK a `motivo_gasto.id` |
+| marca_id | int | FK a `marca.id` |
+| descripcion | str null | Detalle libre del item comprado |
+| cantidad | Decimal | NUMERIC |
+| unidad_medida | str | Ej. `kg`, `unidad`, `litro` |
+| precio_unitario | Decimal | NUMERIC |
+| subtotal | Decimal | Snapshot calculado como `cantidad * precio_unitario` |
 
 ## Maquina de estados de pedido
 

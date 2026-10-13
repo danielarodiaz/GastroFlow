@@ -7,7 +7,7 @@ from sqlmodel import Session, select
 
 from gastroflow.data.database import engine
 from gastroflow.domain.enums import RolUsuario
-from gastroflow.models import Marca, MotivoGasto, UsuarioRead
+from gastroflow.models import GastoDetalle, Marca, MotivoGasto, UsuarioRead
 from gastroflow.services import ExpenseInput, ExpenseService
 
 
@@ -48,8 +48,11 @@ def main() -> None:
         motivos = session.exec(select(MotivoGasto).where(MotivoGasto.nombre == "Harina 000")).all()
         marcas = session.exec(select(Marca).where(Marca.nombre == "Molino Smoke")).all()
 
-        print(gasto.codigo, gasto.precio, gasto.cantidad)
-        print(repeated.codigo, repeated.precio, repeated.cantidad)
+        gasto_detail = session.exec(select(GastoDetalle).where(GastoDetalle.gasto_id == gasto.id)).first()
+        repeated_detail = session.exec(select(GastoDetalle).where(GastoDetalle.gasto_id == repeated.id)).first()
+
+        print(gasto.codigo, gasto.monto_total, gasto_detail.subtotal if gasto_detail else None)
+        print(repeated.codigo, repeated.monto_total, repeated_detail.subtotal if repeated_detail else None)
         print(len(motivos), len(marcas))
 
 

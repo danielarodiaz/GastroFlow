@@ -6,7 +6,7 @@ import pytest
 from gastroflow.domain.enums import RolUsuario
 from gastroflow.domain.errors import ValidationError
 from gastroflow.models import UsuarioRead
-from gastroflow.services import ExpenseInput, ExpenseService
+from gastroflow.services import ExpenseDetailInput, ExpenseService, ExpenseTicketInput
 from gastroflow.services.expenses import normalize_catalog_name
 
 
@@ -16,14 +16,18 @@ def test_normalize_catalog_name_collapses_spaces() -> None:
 
 def test_expense_validation_rejects_negative_price() -> None:
     service = ExpenseService(session=None)  # type: ignore[arg-type]
-    data = ExpenseInput(
+    data = ExpenseTicketInput(
         fecha=date.today(),
-        motivo_nombre="Harina",
-        marca_nombre="Marca",
-        cantidad=Decimal("1"),
-        unidad_medida="kg",
-        precio=Decimal("-1"),
         lugar_texto="Proveedor",
+        items=[
+            ExpenseDetailInput(
+                motivo_nombre="Harina",
+                marca_nombre="Marca",
+                cantidad=Decimal("1"),
+                unidad_medida="kg",
+                precio_unitario=Decimal("-1"),
+            )
+        ],
     )
 
     with pytest.raises(ValidationError):
@@ -35,3 +39,16 @@ def test_expense_money_and_quantity_are_quantized() -> None:
 
     assert service._money(Decimal("10.129")) == Decimal("10.13")
     assert service._quantity(Decimal("1.2349")) == Decimal("1.235")
+
+
+def test_expense_line_subtotal_uses_quantity_and_unit_price() -> None:
+    service = ExpenseService(session=None)  # type: ignore[arg-type]
+    item = ExpenseDetailInput(
+        motivo_nombre="Harina",
+        marca_nombre="Marca",
+        cantidad=Decimal("2.5"),
+        unidad_medida="kg",
+        precio_unitario=Decimal("10.00"),
+    )
+
+    assert service._line_subtotal(item) == Decimal("25.00")

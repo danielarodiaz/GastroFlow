@@ -68,6 +68,13 @@ El proyecto está desarrollado **100% en Python**, priorizando una arquitectura 
 
 ## 📌 Estado de entrega
 
+Plan de separacion cloud definido:
+
+* [docs/separation-architecture.md](docs/separation-architecture.md): arquitectura objetivo con app publica en Render, gestion interna en Streamlit Community Cloud, PostgreSQL unica en Supabase y Supabase Storage.
+* [docs/deploy-render-public.md](docs/deploy-render-public.md): guia del deploy publico de pedidos usando `Dockerfile.public`.
+* [docs/deploy-streamlit-internal.md](docs/deploy-streamlit-internal.md): guia del deploy interno de gestion usando Streamlit Community Cloud.
+* [docs/cloud-rollout-checklist.md](docs/cloud-rollout-checklist.md): checklist de Supabase, migraciones, Render, Streamlit y verificacion final.
+
 Fase 1 completada:
 
 * [docs/phase-1-architecture.md](docs/phase-1-architecture.md): capas, responsabilidades, flujos principales y decisiones pendientes.
