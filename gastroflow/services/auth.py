@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from sqlalchemy import func
 
 from sqlmodel import Session, select
 
@@ -56,11 +57,11 @@ class AuthService:
         self.require_role(user, [RolUsuario.ADMIN, RolUsuario.DUENO])
 
     def _get_user_by_username(self, username: str) -> Usuario | None:
-        return self.session.exec(select(Usuario).where(Usuario.username == username)).first()
+        return self.session.exec(select(Usuario).where(func.upper(Usuario.username) == username.upper())).first()
 
     @staticmethod
     def _normalize_username(username: str) -> str:
-        return username.strip().lower()
+        return username.strip().upper()
 
     @staticmethod
     def _to_read(user: Usuario) -> UsuarioRead:

@@ -76,6 +76,8 @@ class PedidoBase(SQLModel):
 class Pedido(PedidoBase, IdMixin, table=True):
     __tablename__ = "pedido"
 
+    submission_token: Optional[str] = Field(default=None, unique=True, max_length=36)
+
     created_at: datetime = timestamp_field()
     updated_at: datetime = timestamp_field()
 

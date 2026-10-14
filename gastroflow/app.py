@@ -66,6 +66,7 @@ def brand_block(compact: bool = False) -> rx.Component:
 def pill_button(label: str, **props: object) -> rx.Component:
     return rx.button(
         label,
+        type=props.pop("type", "button"),
         border_radius="999px",
         background=props.pop("background", GREEN),
         color=props.pop("color", CREAM),
@@ -100,7 +101,7 @@ def field(label: str, control: rx.Component) -> rx.Component:
     )
 
 
-def input_style() -> dict[str, str]:
+def input_style() -> dict[str, object]:
     return {
         "background": "#fffdf5",
         "border": "1px solid rgba(23, 46, 29, 0.18)",
@@ -108,6 +109,8 @@ def input_style() -> dict[str, str]:
         "box_shadow": "none",
         "color": GREEN,
         "font_weight": "700",
+        "& input::placeholder": {"color": "#514332", "opacity": "1"},
+        "&::placeholder": {"color": "#514332", "opacity": "1"},
     }
 
 
@@ -121,7 +124,7 @@ def select_style() -> dict[str, str]:
 
 
 def placeholder_style() -> dict[str, str]:
-    return {"color": "#725f45", "opacity": "0.9"}
+    return {"color": "#514332", "opacity": "1"}
 
 
 def panel(*children: rx.Component, accent: bool = False, **props: str) -> rx.Component:
@@ -344,7 +347,7 @@ def detail_view() -> rx.Component:
                         style=input_style(),
                     ),
                 ),
-                pill_button("Agregar al carrito", on_click=PublicOrderState.add_selected_to_cart, background=RED),
+                pill_button("Agregar al carrito", on_click=PublicOrderState.add_selected_to_cart, background=RED, loading=PublicOrderState.is_updating_cart, disabled=PublicOrderState.is_submitting | (PublicOrderState.registered_order_code != "")),
                 accent=True,
             ),
             columns="repeat(auto-fit, minmax(min(100%, 340px), 1fr))",
@@ -372,7 +375,7 @@ def cart_item(item: rx.Var[dict]) -> rx.Component:
             align="start",
             flex="1",
         ),
-        outline_button("Quitar", on_click=PublicOrderState.remove_cart_item(item["producto_id"])),
+        outline_button("Quitar", on_click=PublicOrderState.remove_cart_item(item["producto_id"]), disabled=PublicOrderState.is_updating_cart | PublicOrderState.is_submitting | (PublicOrderState.registered_order_code != "")),
         width="100%",
         padding="0.85rem",
         border_radius="14px",
@@ -392,6 +395,7 @@ def zone_option(zone: rx.Var[dict]) -> rx.Component:
             rx.text("$", zone["costo_display"], font_weight="900"),
             width="100%",
         ),
+        type="button",
         on_click=PublicOrderState.select_zone(zone["id"]),
         width="100%",
         border_radius="14px",
@@ -414,6 +418,7 @@ def zone_option(zone: rx.Var[dict]) -> rx.Component:
 def delivery_button(label: str, value: str) -> rx.Component:
     return rx.button(
         label,
+        type="button",
         on_click=PublicOrderState.set_delivery_mode(value),
         width="100%",
         border_radius="14px",
@@ -429,6 +434,7 @@ def delivery_button(label: str, value: str) -> rx.Component:
 def payment_button(label: str, value: str) -> rx.Component:
     return rx.button(
         label,
+        type="button",
         on_click=PublicOrderState.set_forma_pago(value),
         width="100%",
         border_radius="14px",
@@ -467,114 +473,147 @@ def cart_view() -> rx.Component:
                     width="100%",
                 ),
             ),
-            panel(
-                rx.heading("Confirmar pedido", size="6", font_family=FONT_STACK, color=GREEN),
-                field(
-                    "Nombre y apellido",
-                    rx.input(
-                        value=PublicOrderState.nombre_apellido,
-                        on_change=PublicOrderState.set_nombre_apellido,
-                        placeholder="Tu nombre",
-                        style=input_style(),
-                        _placeholder=placeholder_style(),
+            rx.cond(
+                PublicOrderState.registered_order_code != "",
+                panel(
+                    rx.heading("Pedido registrado", size="6", color=GREEN),
+                    rx.text(PublicOrderState.message, font_weight="900", role="status"),
+                    rx.text("Pedido: ", PublicOrderState.registered_order_code),
+                    rx.text("Si WhatsApp no se abrió, presioná Enviar por WhatsApp. Tu pedido ya está guardado; este botón no lo vuelve a registrar."),
+                    rx.link(
+                        "Enviar por WhatsApp", href=PublicOrderState.whatsapp_url,
+                        color=GREEN, font_weight="900", padding="1rem",
+                        border=f"2px solid {GREEN}", border_radius="12px",
                     ),
+                    outline_button("Hacer otro pedido", on_click=PublicOrderState.start_new_order),
+                    accent=True,
                 ),
-                field(
-                    "Telefono",
-                    rx.input(
-                        value=PublicOrderState.telefono,
-                        on_change=PublicOrderState.set_telefono,
-                        placeholder="381...",
-                        style=input_style(),
-                        _placeholder=placeholder_style(),
-                    ),
-                ),
-                field(
-                    "Fecha de entrega",
-                    rx.input(
-                        value=PublicOrderState.fecha_entrega,
-                        on_change=PublicOrderState.set_fecha_entrega,
-                        placeholder="DD/MM/AAAA",
-                        max_length=10,
-                        input_mode="numeric",
-                        style=input_style(),
-                        _placeholder=placeholder_style(),
-                    ),
-                ),
-                field(
-                    "Horario ideal de entrega",
-                    rx.input(
-                        value=PublicOrderState.horario_entrega,
-                        on_change=PublicOrderState.set_horario_entrega,
-                        placeholder="HH:MM",
-                        max_length=5,
-                        input_mode="numeric",
-                        style=input_style(),
-                        _placeholder=placeholder_style(),
-                    ),
-                ),
-                field(
-                    "Entrega",
-                    rx.grid(
-                        delivery_button("Retiro del local", "retiro"),
-                        delivery_button("Necesito que me lo envie", "delivery"),
-                        columns="repeat(auto-fit, minmax(min(100%, 160px), 1fr))",
-                        spacing="2",
-                        width="100%",
-                    ),
-                ),
-                rx.cond(
-                    PublicOrderState.delivery_mode == "delivery",
-                    rx.vstack(
+                rx.form(
+                    panel(
+                        rx.heading("Confirmar pedido", size="6", font_family=FONT_STACK, color=GREEN),
                         field(
-                            "Direccion",
+                            "Nombre y apellido",
                             rx.input(
-                                value=PublicOrderState.direccion_delivery,
-                                on_change=PublicOrderState.set_direccion_delivery,
-                                placeholder="Calle, numero, localidad",
+                                value=PublicOrderState.nombre_apellido,
+                                name="nombre_apellido",
+                                on_change=PublicOrderState.set_nombre_apellido,
+                                placeholder="Tu nombre",
                                 style=input_style(),
                                 _placeholder=placeholder_style(),
                             ),
                         ),
-                        field("Zona de envio", rx.vstack(rx.foreach(PublicOrderState.zones, zone_option), spacing="2", align="stretch")),
-                        spacing="4",
-                        align="stretch",
+                        field(
+                            "Telefono",
+                            rx.input(
+                                value=PublicOrderState.telefono,
+                                name="telefono",
+                                on_change=PublicOrderState.set_telefono,
+                                placeholder="381...",
+                                style=input_style(),
+                                _placeholder=placeholder_style(),
+                            ),
+                        ),
+                        field(
+                            "Fecha de entrega",
+                            rx.input(
+                                value=PublicOrderState.fecha_entrega,
+                                name="fecha_entrega",
+                                on_change=PublicOrderState.set_fecha_entrega,
+                                on_blur=PublicOrderState.complete_delivery_date,
+                                placeholder="DD/MM (año opcional)",
+                                max_length=10,
+                                input_mode="numeric",
+                                style=input_style(),
+                                _placeholder=placeholder_style(),
+                            ),
+                        ),
+                        field(
+                            "Horario ideal de entrega",
+                            rx.input(
+                                value=PublicOrderState.horario_entrega,
+                                name="horario_entrega",
+                                on_change=PublicOrderState.set_horario_entrega,
+                                on_blur=PublicOrderState.complete_delivery_time,
+                                placeholder="21 o 21:30",
+                                max_length=5,
+                                input_mode="numeric",
+                                style=input_style(),
+                                _placeholder=placeholder_style(),
+                            ),
+                        ),
+                        field(
+                            "Entrega",
+                            rx.grid(
+                                delivery_button("Retiro del local", "retiro"),
+                                delivery_button("Necesito que me lo envie", "delivery"),
+                                columns="repeat(auto-fit, minmax(min(100%, 160px), 1fr))",
+                                spacing="2",
+                                width="100%",
+                            ),
+                        ),
+                        rx.cond(
+                            PublicOrderState.delivery_mode == "delivery",
+                            rx.vstack(
+                                field(
+                                    "Direccion",
+                                    rx.input(
+                                        value=PublicOrderState.direccion_delivery,
+                                        name="direccion_delivery",
+                                        on_change=PublicOrderState.set_direccion_delivery,
+                                        placeholder="Calle, numero, localidad",
+                                        style=input_style(),
+                                        _placeholder=placeholder_style(),
+                                    ),
+                                ),
+                                field("Zona de envio", rx.vstack(rx.foreach(PublicOrderState.zones, zone_option), spacing="2", align="stretch")),
+                                spacing="4",
+                                align="stretch",
+                            ),
+                            rx.fragment(),
+                        ),
+                        field(
+                            "Forma de pago",
+                            rx.grid(
+                                payment_button("Efectivo", "efectivo"),
+                                payment_button("Transferencia", "transferencia"),
+                                columns="repeat(auto-fit, minmax(min(100%, 150px), 1fr))",
+                                spacing="2",
+                                width="100%",
+                            ),
+                        ),
+                        rx.cond(
+                            PublicOrderState.forma_pago == "efectivo",
+                            rx.text(
+                                "En observaciones contanos con cuanto vas a pagar para que el delivery lleve cambio.",
+                                color=RED,
+                                font_weight="900",
+                                font_size="0.9rem",
+                            ),
+                            rx.fragment(),
+                        ),
+                        field(
+                            "Observaciones",
+                            rx.text_area(
+                                value=PublicOrderState.observaciones,
+                                name="observaciones",
+                                on_change=PublicOrderState.set_observaciones,
+                                placeholder="Referencias, cambio para efectivo, aclaraciones del pedido...",
+                                style=input_style(),
+                                _placeholder=placeholder_style(),
+                            ),
+                        ),
+                        rx.cond(
+                            PublicOrderState.is_submitting,
+                            rx.hstack(rx.spinner(), rx.text("Registrando tu pedido..."), role="status", align="center"),
+                            pill_button("Confirmar pedido", type="submit", background=RED, width="100%", disabled=PublicOrderState.is_updating_cart),
+                        ),
+                        rx.text(PublicOrderState.message, color=GREEN, font_weight="900", role="status"),
+                        accent=True,
                     ),
-                    rx.fragment(),
+                    on_submit=PublicOrderState.submit_order,
+                    reset_on_submit=False,
+                    width="100%",
                 ),
-                field(
-                    "Forma de pago",
-                    rx.grid(
-                        payment_button("Efectivo", "efectivo"),
-                        payment_button("Transferencia", "transferencia"),
-                        columns="repeat(auto-fit, minmax(min(100%, 150px), 1fr))",
-                        spacing="2",
-                        width="100%",
-                    ),
-                ),
-                rx.cond(
-                    PublicOrderState.forma_pago == "efectivo",
-                    rx.text(
-                        "En observaciones contanos con cuanto vas a pagar para que el delivery lleve cambio.",
-                        color=RED,
-                        font_weight="900",
-                        font_size="0.9rem",
-                    ),
-                    rx.fragment(),
-                ),
-                field(
-                    "Observaciones",
-                    rx.text_area(
-                        value=PublicOrderState.observaciones,
-                        on_change=PublicOrderState.set_observaciones,
-                        placeholder="Referencias, cambio para efectivo, aclaraciones del pedido...",
-                        style=input_style(),
-                        _placeholder=placeholder_style(),
-                    ),
-                ),
-                pill_button("Confirmar pedido", on_click=PublicOrderState.submit_order, background=RED, width="100%"),
-                rx.text(PublicOrderState.message, color=GREEN, font_weight="900"),
-                accent=True,
             ),
             columns="repeat(auto-fit, minmax(min(100%, 360px), 1fr))",
             spacing="5",
@@ -1576,7 +1615,7 @@ def health_page() -> rx.Component:
 
 app = rx.App()
 app.add_page(health_page, route="/ping")
-app.add_page(public_page, route="/", on_load=PublicOrderState.load_catalog)
+app.add_page(public_page, route="/", on_load=[BrandState.load_brand, PublicOrderState.load_catalog])
 app.add_page(login_page, route="/login", on_load=AuthState.clear_message)
 app.add_page(orders_page, route="/pedidos", on_load=OperationsState.load_orders)
 app.add_page(expenses_page, route="/gastos", on_load=ExpenseState.load_expenses)

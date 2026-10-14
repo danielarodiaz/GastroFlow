@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ from decimal import Decimal
 from typing import Any
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
+from uuid import uuid4
 
 import reflex as rx
 from openpyxl import Workbook
@@ -203,7 +205,10 @@ def _parse_delivery_date(value: str) -> date:
     clean = value.strip()
     if "-" in clean and len(clean.split("-")[0]) == 4:
         return date.fromisoformat(clean)
-    day, month, year = clean.split("/")
+    parts = clean.split("/")
+    if len(parts) == 2:
+        parts.append(str(datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).year))
+    day, month, year = parts
     return date(int(year), int(month), int(day))
 
 
@@ -240,6 +245,36 @@ def _validate_time(value: str) -> None:
     hour, minute = value.split(":")
     if not (0 <= int(hour) <= 23 and 0 <= int(minute) <= 59):
         raise ValueError("Ingresa un horario valido con formato HH:MM.")
+
+
+def _complete_time(value: str) -> str:
+    clean = value.strip()
+    if clean.isdigit() and len(clean) <= 2:
+        clean = f"{int(clean):02d}:00"
+    _validate_time(clean)
+    return clean
+
+
+def _create_public_order(payload: PublicOrderInput):
+    with Session(engine) as session:
+        return OrderService(session).create_public_order(payload)
+
+
+def _price_public_cart(inputs: list[OrderItemInput]):
+    with Session(engine) as session:
+        return OrderService(session)._price_items(inputs)
+
+
+def _public_catalog_rows():
+    with Session(engine) as session:
+        categories = session.exec(select(Categoria).where(
+            Categoria.visible_cliente == True, Categoria.es_automatica == False,
+            Categoria.activa == True,
+        )).all()
+        products = session.exec(select(Producto).where(Producto.activo == True)).all()
+        relations = session.exec(select(ProductoCategoria).where(ProductoCategoria.activo == True)).all()
+        zones = session.exec(select(ZonaEnvio)).all()
+    return categories, products, relations, zones
 
 
 class AuthState(rx.State):
@@ -311,10 +346,10 @@ class AuthState(rx.State):
 
 
 class BrandState(rx.State):
-    logo_url: str = _normalize_upload_path(_read_brand_logo_url())
+    logo_url: str = _normalize_upload_path(os.getenv("BRAND_LOGO_URL", ""))
 
-    def load_brand(self) -> None:
-        self.logo_url = _normalize_upload_path(_read_brand_logo_url())
+    async def load_brand(self) -> None:
+        self.logo_url = _normalize_upload_path(await asyncio.to_thread(_read_brand_logo_url))
 
 
 class PublicOrderState(rx.State):
@@ -343,23 +378,16 @@ class PublicOrderState(rx.State):
     order_total_display: str = "0,00"
     message: str = ""
     technical_error: str = ""
+    is_submitting: bool = False
+    is_updating_cart: bool = False
+    registered_order_code: str = ""
+    whatsapp_url: str = ""
+    submission_token: str = ""
 
-    def load_catalog(self) -> None:
+    async def load_catalog(self) -> None:
         self.message = ""
         self.technical_error = ""
-        with Session(engine) as session:
-            categories = session.exec(
-                select(Categoria).where(
-                    Categoria.visible_cliente == True,  # noqa: E712
-                    Categoria.es_automatica == False,  # noqa: E712
-                    Categoria.activa == True,  # noqa: E712
-                )
-            ).all()
-            products = session.exec(select(Producto)).all()
-            product_categories = session.exec(
-                select(ProductoCategoria).where(ProductoCategoria.activo == True)  # noqa: E712
-            ).all()
-            zones = session.exec(select(ZonaEnvio)).all()
+        categories, products, product_categories, zones = await asyncio.to_thread(_public_catalog_rows)
 
         category_names = {category.id: category.nombre for category in categories}
         category_codes = {category.id: category.codigo for category in categories}
@@ -442,7 +470,9 @@ class PublicOrderState(rx.State):
         self.view = "detail"
         self.message = ""
 
-    def add_selected_to_cart(self) -> None:
+    async def add_selected_to_cart(self):
+        if self.is_updating_cart or self.registered_order_code or self.is_submitting:
+            return
         if not self.selected_product:
             self.message = "Selecciona un producto."
             return
@@ -482,13 +512,26 @@ class PublicOrderState(rx.State):
                 }
             )
         self.cart = cart
-        self._refresh_cart_total()
-        self.message = "Producto agregado al pedido."
+        self.is_updating_cart = True
+        yield
+        try:
+            await self._refresh_cart_total()
+        finally:
+            self.is_updating_cart = False
+        self.message = "Se agregó al carrito correctamente."
         self.view = "products"
+        yield rx.toast.success(self.message)
 
-    def remove_cart_item(self, product_id: int) -> None:
+    async def remove_cart_item(self, product_id: int):
+        if self.is_updating_cart or self.registered_order_code or self.is_submitting:
+            return
         self.cart = [item for item in self.cart if int(item["producto_id"]) != int(product_id)]
-        self._refresh_cart_total()
+        self.is_updating_cart = True
+        yield
+        try:
+            await self._refresh_cart_total()
+        finally:
+            self.is_updating_cart = False
         self.message = ""
 
     def show_cart(self) -> None:
@@ -501,6 +544,18 @@ class PublicOrderState(rx.State):
     def set_horario_entrega(self, value: str) -> None:
         self.horario_entrega = _mask_time(value)
 
+    def complete_delivery_date(self, value: str) -> None:
+        try:
+            self.fecha_entrega = _date_text(_parse_delivery_date(value))
+        except ValueError:
+            self.fecha_entrega = value
+
+    def complete_delivery_time(self, value: str) -> None:
+        try:
+            self.horario_entrega = _complete_time(value)
+        except ValueError:
+            self.horario_entrega = value
+
     def set_delivery_mode(self, value: str) -> None:
         self.delivery_mode = value
         if value == "retiro":
@@ -508,24 +563,35 @@ class PublicOrderState(rx.State):
             self.zona_envio_id = ""
             self.selected_zone_name = ""
             self.selected_zone_cost = "0,00"
-        self._refresh_cart_total()
+        self._refresh_order_total()
 
     def select_zone(self, zone_id: int) -> None:
         selected = next((zone for zone in self.zones if str(zone["id"]) == str(zone_id)), {})
         self.zona_envio_id = str(zone_id)
         self.selected_zone_name = selected.get("nombre", "")
         self.selected_zone_cost = selected.get("costo_display", "0,00")
-        self._refresh_cart_total()
+        self._refresh_order_total()
 
     def set_forma_pago(self, value: str) -> None:
         self.forma_pago = value
 
-    def submit_order(self) -> rx.event.EventSpec | None:
+    async def submit_order(self, form_data: dict[str, Any]):
+        if self.is_submitting or self.registered_order_code or self.is_updating_cart:
+            return
+        # Read the actual inputs, including the last keystroke still awaiting debounce.
+        for field in ("nombre_apellido", "telefono", "fecha_entrega", "horario_entrega", "direccion_delivery", "observaciones"):
+            if field in form_data:
+                setattr(self, field, str(form_data[field]))
+        self.is_submitting = True
+        self.message = "Registrando tu pedido..."
+        self.technical_error = ""
+        yield
         try:
             if not self.cart:
                 raise ValueError("Tu pedido esta vacio.")
             delivery_date = _parse_delivery_date(self.fecha_entrega)
-            _validate_time(self.horario_entrega)
+            self.fecha_entrega = _date_text(delivery_date)
+            self.horario_entrega = _complete_time(self.horario_entrega)
             if self.delivery_mode == "delivery" and not self.zona_envio_id:
                 raise ValueError("Selecciona una zona de envio.")
             items = [
@@ -536,7 +602,10 @@ class PublicOrderState(rx.State):
                 )
                 for item in self.cart
             ]
+            if not self.submission_token:
+                self.submission_token = str(uuid4())
             payload = PublicOrderInput(
+                submission_token=self.submission_token,
                 nombre_apellido=self.nombre_apellido,
                 telefono=self.telefono,
                 fecha_entrega=delivery_date,
@@ -546,17 +615,22 @@ class PublicOrderState(rx.State):
                 observaciones=self.observaciones or None,
                 items=items,
             )
-            with Session(engine) as session:
-                result = OrderService(session).create_public_order(payload)
-            whatsapp_url = self._build_whatsapp_url(result.pedido.codigo, result.pedido.monto_total)
-            self.message = "Pedido creado. Te llevamos a WhatsApp para enviar el resumen."
-            return rx.redirect(whatsapp_url, is_external=True)
+            result = await asyncio.to_thread(_create_public_order, payload)
+            # Mark success before generating the link: even a later error must not resave.
+            self.registered_order_code = result.pedido.codigo
+            self.whatsapp_url = self._build_whatsapp_url(result.pedido.codigo, result.pedido.monto_total)
+            self.message = "Su pedido se registró correctamente. Te enviaremos a WhatsApp para que confirmes tu pedido."
+            yield
+            # Same-tab navigation does not depend on popup permissions.
+            yield rx.call_script(f"window.location.assign({json.dumps(self.whatsapp_url)})")
         except Exception as exc:
             self.message = _friendly_error(exc)
             self.technical_error = str(exc)
-            return None
+            yield rx.toast.error(self.message)
+        finally:
+            self.is_submitting = False
 
-    def _refresh_cart_total(self) -> None:
+    async def _refresh_cart_total(self) -> None:
         cart = [dict(item) for item in self.cart]
         if cart:
             try:
@@ -568,8 +642,7 @@ class PublicOrderState(rx.State):
                     )
                     for item in cart
                 ]
-                with Session(engine) as session:
-                    priced_items = OrderService(session)._price_items(inputs)
+                priced_items = await asyncio.to_thread(_price_public_cart, inputs)
                 for cart_item, priced_item in zip(cart, priced_items):
                     base_unit = Decimal(str(cart_item["precio"]))
                     final_unit = Decimal(str(priced_item.precio_unitario))
@@ -606,6 +679,26 @@ class PublicOrderState(rx.State):
         self.cart_total = str(items_total.quantize(MONEY_QUANT))
         self.cart_total_display = _money_text(items_total)
         self.order_total_display = _money_text(order_total)
+
+    def _refresh_order_total(self) -> None:
+        self.order_total_display = _money_text(Decimal(self.cart_total) + self._selected_shipping_cost())
+
+    def start_new_order(self) -> None:
+        if self.is_submitting:
+            return
+        self.cart = []
+        self.cart_total = "0.00"
+        self.cart_total_display = "0,00"
+        self.registered_order_code = ""
+        self.whatsapp_url = ""
+        self.submission_token = ""
+        self.message = ""
+        self.delivery_mode = "retiro"
+        self.zona_envio_id = ""
+        self.selected_zone_name = ""
+        self.selected_zone_cost = "0,00"
+        self._refresh_order_total()
+        self.view = "categories"
 
     def _selected_shipping_cost(self) -> Decimal:
         if self.delivery_mode != "delivery" or not self.zona_envio_id:
@@ -1149,7 +1242,7 @@ class CatalogAdminState(rx.State):
     pending_delete_promo_id: str = ""
     pending_save_category: bool = False
     pending_save_product: bool = False
-    logo_url: str = _normalize_upload_path(_read_brand_logo_url())
+    logo_url: str = _normalize_upload_path(os.getenv("BRAND_LOGO_URL", ""))
     message: str = ""
     technical_error: str = ""
     show_technical_error: bool = False
@@ -1547,7 +1640,7 @@ class CatalogAdminState(rx.State):
         relative_path = await self._save_upload(files[0], "brand")
         _write_brand_logo_url(relative_path)
         brand = await self.get_state(BrandState)
-        brand.load_brand()
+        await brand.load_brand()
         self.logo_url = relative_path
         self.message = "Logo actualizado."
         return rx.toast.success("Logo actualizado.")
@@ -1581,7 +1674,7 @@ class CatalogAdminState(rx.State):
     async def delete_logo(self) -> rx.event.EventSpec:
         _write_brand_logo_url("")
         brand = await self.get_state(BrandState)
-        brand.load_brand()
+        await brand.load_brand()
         self.logo_url = ""
         self.message = "Logo eliminado."
         return rx.toast.success("Logo eliminado.")

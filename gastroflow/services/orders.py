@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from urllib.parse import quote
+from sqlalchemy import text
 
 from sqlmodel import Session, select
 
@@ -55,6 +56,7 @@ class PublicOrderInput:
     direccion_lng: Decimal | None = None
     observaciones: str | None = None
     contexto_origen: str = DEFAULT_CONTEXT_CODE
+    submission_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -84,8 +86,17 @@ class OrderService:
         self.session = session
 
     def create_public_order(self, data: PublicOrderInput) -> CreatedOrderResult:
+        if data.submission_token:
+            # Serialize retries across workers before touching the customer or order.
+            if self.session.get_bind().dialect.name == "postgresql":
+                self.session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:token, 0))"), {"token": data.submission_token})
+            existing = self.session.exec(select(Pedido).where(Pedido.submission_token == data.submission_token)).first()
+            if existing is not None:
+                return CreatedOrderResult(pedido=self._to_read(existing), whatsapp_url=None)
         if not data.items:
             raise ValidationError("El pedido debe tener al menos un item.")
+        if not data.nombre_apellido.strip():
+            raise ValidationError("El nombre y apellido son obligatorios.")
 
         cliente = self._upsert_cliente(data.nombre_apellido, data.telefono)
         codigo = next_business_code(self.session, "pedido_codigo_seq", "PED")
@@ -101,6 +112,7 @@ class OrderService:
         )
 
         pedido = Pedido(
+            submission_token=data.submission_token,
             codigo=codigo,
             fecha_entrega=data.fecha_entrega,
             cliente_id=cliente.id or 0,
@@ -379,11 +391,14 @@ class OrderService:
         ).all()
 
         prices: dict[int, AppliedPromotion] = {}
+        links = self.session.exec(select(PromocionProducto).where(
+            PromocionProducto.promocion_id.in_([promotion.id for promotion in promotions])
+        )).all() if promotions else []
+        products_by_promotion: dict[int, set[int]] = {}
+        for link in links:
+            products_by_promotion.setdefault(link.promocion_id, set()).add(link.producto_id)
         for promotion in promotions:
-            links = self.session.exec(
-                select(PromocionProducto).where(PromocionProducto.promocion_id == promotion.id)
-            ).all()
-            eligible_product_ids = {link.producto_id for link in links}
+            eligible_product_ids = products_by_promotion.get(promotion.id, set())
             eligible_quantity = sum(
                 quantity
                 for product_id, quantity in quantities_by_product.items()

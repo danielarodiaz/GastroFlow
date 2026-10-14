@@ -5,6 +5,7 @@ import getpass
 import os
 
 from sqlmodel import Session, select
+from sqlalchemy import func
 
 from gastroflow.data.database import engine
 from gastroflow.domain.enums import RolUsuario
@@ -22,11 +23,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    username = args.username.strip().lower()
+    username = args.username.strip().upper()
     password = args.password or getpass.getpass("Password Admin: ")
 
     with Session(engine) as session:
-        user = session.exec(select(Usuario).where(Usuario.username == username)).first()
+        user = session.exec(select(Usuario).where(func.upper(Usuario.username) == username)).first()
         if user is None:
             admin = AuthService(session).create_user(username=username, password=password, rol=RolUsuario.ADMIN)
             print(f"Admin creado: {admin.username}")

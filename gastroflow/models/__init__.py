@@ -1,4 +1,5 @@
 from sqlmodel import SQLModel
+from gastroflow.models import normalization as _normalization
 
 from gastroflow.models.catalog import (
     AppConfig,
