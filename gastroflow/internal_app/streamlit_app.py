@@ -334,8 +334,8 @@ def _render_category_editor(categories: list[Categoria]) -> None:
             if category is None:
                 st.error("Categoria inexistente.")
                 return
-            category.nombre = nombre.strip()
-            category.descripcion_publica = descripcion.strip() or None
+            category.nombre = " ".join(nombre.strip().split())
+            category.descripcion_publica = " ".join(descripcion.strip().split()) or None
             category.orden = int(orden)
             category.visible_cliente = visible
             category.activa = activa
@@ -395,7 +395,7 @@ def _render_product_category_editor(product_rows: list[dict[str, Any]]) -> None:
                 st.error("Relacion inexistente.")
                 return
             relation.precio = Decimal(str(precio)).quantize(Decimal("0.01"))
-            relation.descripcion_publica = descripcion.strip().upper() or None
+            relation.descripcion_publica = " ".join(descripcion.strip().split()) or None
             relation.orden = int(orden)
             relation.visible = visible
             relation.destacado = destacado
@@ -567,11 +567,11 @@ def _add_expense_ticket_item(
     st.session_state.expense_ticket_items = [
         *st.session_state.expense_ticket_items,
         {
-            "motivo": motivo.strip().upper(),
-            "marca": marca.strip().upper(),
-            "descripcion": descripcion.strip().upper(),
+            "motivo": " ".join(motivo.strip().split()),
+            "marca": " ".join(marca.strip().split()),
+            "descripcion": " ".join(descripcion.strip().split()),
             "cantidad": str(cantidad),
-            "unidad": unidad.strip().upper(),
+            "unidad": " ".join(unidad.strip().split()),
             "precio_unitario": str(precio),
             "subtotal": str(subtotal),
         },
@@ -732,7 +732,7 @@ def _save_promotion(
         if promo_id is None:
             promo = Promocion(
                 codigo=codigo.strip().upper(),
-                nombre=nombre.strip().upper(),
+                nombre=" ".join(nombre.strip().split()),
                 tipo=TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
                 cantidad_minima=cantidad_minima,
                 precio_unitario_promocional=precio_unitario,
@@ -747,7 +747,7 @@ def _save_promotion(
                 st.error("Promocion inexistente.")
                 return
             promo.codigo = codigo.strip().upper()
-            promo.nombre = nombre.strip().upper()
+            promo.nombre = " ".join(nombre.strip().split())
             promo.cantidad_minima = cantidad_minima
             promo.precio_unitario_promocional = precio_unitario
             promo.precio_total_promocional = precio_total

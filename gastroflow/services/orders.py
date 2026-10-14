@@ -167,8 +167,6 @@ class OrderService:
 
     def _upsert_cliente(self, nombre_apellido: str, telefono: str) -> Cliente:
         normalized_phone = normalize_phone(telefono)
-        if not normalized_phone:
-            raise ValidationError("El telefono del cliente es obligatorio.")
 
         cliente = self.session.exec(
             select(Cliente).where(Cliente.telefono == normalized_phone)
@@ -518,7 +516,25 @@ class OrderService:
 
 
 def normalize_phone(phone: str) -> str:
-    normalized = "".join(char for char in phone.strip() if char.isdigit() or char == "+")
-    if normalized.startswith("00"):
-        normalized = f"+{normalized[2:]}"
-    return normalized
+    digits = "".join(char for char in phone if char.isdigit())
+    if digits.startswith("00549"):
+        digits = digits[5:]
+    elif digits.startswith("0054"):
+        digits = digits[4:]
+    elif digits.startswith("549"):
+        digits = digits[3:]
+    elif digits.startswith("54") and len(digits) > 10:
+        digits = digits[2:]
+    if digits.startswith("0"):
+        digits = digits[1:]
+    # Accept the legacy domestic mobile form AREA + 15 + NUMBER.
+    if len(digits) == 12:
+        positions = [position for position in range(2, 5) if digits[position:position + 2] == "15"]
+        if len(positions) == 1:
+            position = positions[0]
+            digits = digits[:position] + digits[position + 2:]
+    if len(digits) != 10 or digits.startswith("0"):
+        raise ValidationError(
+            "Ingresa un celular argentino válido de 10 dígitos, por ejemplo 3813543860."
+        )
+    return digits

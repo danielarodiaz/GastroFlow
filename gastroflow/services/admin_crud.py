@@ -27,6 +27,7 @@ from gastroflow.models import (
 )
 from gastroflow.security import hash_password
 from gastroflow.services.auth import AuthService
+from gastroflow.services.orders import normalize_phone
 
 
 @dataclass(frozen=True)
@@ -142,6 +143,16 @@ class AdminCrudService:
                 payload["password_hash"] = hash_password(str(password))
             elif is_create:
                 raise ValidationError("La password es obligatoria para crear un usuario.")
+
+        table_name = getattr(config.model, "__tablename__", "")
+        for field in ("codigo", "username"):
+            if field in payload and isinstance(payload[field], str):
+                payload[field] = " ".join(payload[field].strip().split()).upper()
+        if table_name == "cliente" and "telefono" in payload:
+            payload["telefono"] = normalize_phone(str(payload["telefono"]))
+        for key, value in payload.items():
+            if isinstance(value, str) and key not in {"password_hash"}:
+                payload[key] = " ".join(value.strip().split())
 
         return payload
 

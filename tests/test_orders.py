@@ -218,9 +218,17 @@ def test_combo_price_uses_average_rule() -> None:
     assert price == Decimal("6250.00")
 
 
-def test_normalize_phone_keeps_plus_and_digits() -> None:
-    assert normalize_phone(" +54 381 555-1234 ") == "+543815551234"
-    assert normalize_phone("0054 381 555-1234") == "+543815551234"
+def test_normalize_phone_uses_argentine_national_format() -> None:
+    assert normalize_phone(" +54 9 381 555-1234 ") == "3815551234"
+    assert normalize_phone("0054 381 555-1234") == "3815551234"
+    assert normalize_phone("0381 555-1234") == "3815551234"
+    assert normalize_phone("381 15 555-1234") == "3815551234"
+
+
+@pytest.mark.parametrize("phone", ["", "381543860", "123", "+54 381 12"])
+def test_normalize_phone_rejects_incomplete_numbers(phone: str) -> None:
+    with pytest.raises(ValidationError, match="10 dígitos"):
+        normalize_phone(phone)
 
 
 def test_standard_order_with_10_units_uses_automatic_wholesale_price() -> None:

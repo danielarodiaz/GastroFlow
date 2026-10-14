@@ -210,7 +210,7 @@ def category_card(category: rx.Var[dict]) -> rx.Component:
         rx.vstack(
             rx.cond(
                 category["foto"] != "",
-                rx.image(src=category["foto"], width="100%", height="112px", object_fit="cover", border_radius="14px"),
+                rx.image(src=category["foto"], width="100%", height="112px", object_fit="cover", border_radius="14px", loading="lazy", decoding="async"),
                 food_visual(category["nombre"], "112px"),
             ),
             rx.text(category["nombre"], font_family=FONT_STACK, font_size="1.4rem", color=GREEN, font_weight="900"),
@@ -244,6 +244,8 @@ def product_image(product: rx.Var[dict], height: str = "150px") -> rx.Component:
         product["foto"] != "",
         rx.image(
             src=product["foto"],
+            loading="lazy",
+            decoding="async",
             width="100%",
             height=height,
             object_fit="cover",
@@ -503,12 +505,29 @@ def cart_view() -> rx.Component:
                             ),
                         ),
                         field(
-                            "Telefono",
+                            "Celular",
                             rx.input(
                                 value=PublicOrderState.telefono,
                                 name="telefono",
                                 on_change=PublicOrderState.set_telefono,
-                                placeholder="381...",
+                                placeholder="3813543860",
+                                input_mode="tel",
+                                style=input_style(),
+                                _placeholder=placeholder_style(),
+                            ),
+                        ),
+                        rx.text(
+                            "Ingresá 10 dígitos. También podés usar +54 9 o 0 delante del código de área.",
+                            color="#514332", font_size="0.78rem",
+                        ),
+                        field(
+                            "Repetir celular",
+                            rx.input(
+                                value=PublicOrderState.telefono_confirmacion,
+                                name="telefono_confirmacion",
+                                on_change=PublicOrderState.set_telefono_confirmacion,
+                                placeholder="Volvé a escribir el número",
+                                input_mode="tel",
                                 style=input_style(),
                                 _placeholder=placeholder_style(),
                             ),
@@ -607,7 +626,11 @@ def cart_view() -> rx.Component:
                             rx.hstack(rx.spinner(), rx.text("Registrando tu pedido..."), role="status", align="center"),
                             pill_button("Confirmar pedido", type="submit", background=RED, width="100%", disabled=PublicOrderState.is_updating_cart),
                         ),
-                        rx.text(PublicOrderState.message, color=GREEN, font_weight="900", role="status"),
+                        rx.cond(
+                            ~PublicOrderState.is_submitting,
+                            rx.text(PublicOrderState.message, color=GREEN, font_weight="900", role="status"),
+                            rx.fragment(),
+                        ),
                         accent=True,
                     ),
                     on_submit=PublicOrderState.submit_order,
@@ -627,12 +650,23 @@ def cart_view() -> rx.Component:
 def public_page() -> rx.Component:
     return public_shell(
         rx.cond(
-            PublicOrderState.view == "products",
-            products_view(),
+            PublicOrderState.is_loading_catalog,
+            rx.center(rx.hstack(rx.spinner(), rx.text("Cargando catálogo..."), align="center", role="status"), min_height="180px"),
             rx.cond(
-                PublicOrderState.view == "detail",
-                detail_view(),
-                rx.cond(PublicOrderState.view == "cart", cart_view(), categories_view()),
+                PublicOrderState.catalog_error != "",
+                panel(
+                    rx.text(PublicOrderState.catalog_error, role="alert"),
+                    pill_button("Reintentar", on_click=PublicOrderState.load_catalog),
+                ),
+                rx.cond(
+                    PublicOrderState.view == "products",
+                    products_view(),
+                    rx.cond(
+                        PublicOrderState.view == "detail",
+                        detail_view(),
+                        rx.cond(PublicOrderState.view == "cart", cart_view(), categories_view()),
+                    ),
+                ),
             ),
         )
     )
@@ -1615,7 +1649,7 @@ def health_page() -> rx.Component:
 
 app = rx.App()
 app.add_page(health_page, route="/ping")
-app.add_page(public_page, route="/", on_load=[BrandState.load_brand, PublicOrderState.load_catalog])
+app.add_page(public_page, route="/", on_load=PublicOrderState.load_catalog)
 app.add_page(login_page, route="/login", on_load=AuthState.clear_message)
 app.add_page(orders_page, route="/pedidos", on_load=OperationsState.load_orders)
 app.add_page(expenses_page, route="/gastos", on_load=ExpenseState.load_expenses)

@@ -48,6 +48,8 @@ from gastroflow.services import (
     PublicOrderInput,
 )
 from gastroflow.services.media_storage import normalize_media_url, save_media_upload
+from gastroflow.services.public_catalog import brand_cache, catalog_cache
+from gastroflow.services.orders import normalize_phone
 from gastroflow.models import AppConfig
 
 MONEY_QUANT = Decimal("0.01")
@@ -108,6 +110,10 @@ def _quantity_text(value: Decimal | str | int) -> str:
 
 def _upper_text(value: str) -> str:
     return " ".join(value.strip().split()).upper()
+
+
+def _clean_text(value: str) -> str:
+    return " ".join(value.strip().split())
 
 
 def _parse_quantity_input(value: str) -> Decimal:
@@ -195,6 +201,7 @@ def _write_brand_logo_url(url: str) -> None:
             setting.value = url
         session.add(setting)
         session.commit()
+    brand_cache.invalidate()
 
 
 def _normalize_upload_path(value: str | None) -> str:
@@ -267,14 +274,22 @@ def _price_public_cart(inputs: list[OrderItemInput]):
 
 def _public_catalog_rows():
     with Session(engine) as session:
-        categories = session.exec(select(Categoria).where(
-            Categoria.visible_cliente == True, Categoria.es_automatica == False,
-            Categoria.activa == True,
-        )).all()
-        products = session.exec(select(Producto).where(Producto.activo == True)).all()
-        relations = session.exec(select(ProductoCategoria).where(ProductoCategoria.activo == True)).all()
+        # Fetch only public products together with their categories in one round trip.
+        rows = session.exec(
+            select(Categoria, ProductoCategoria, Producto)
+            .outerjoin(ProductoCategoria, (
+                (ProductoCategoria.categoria_id == Categoria.id)
+                & (ProductoCategoria.activo == True)
+                & (ProductoCategoria.visible == True)
+            ))
+            .outerjoin(Producto, (Producto.id == ProductoCategoria.producto_id) & (Producto.activo == True))
+            .where(Categoria.visible_cliente == True, Categoria.es_automatica == False, Categoria.activa == True)
+        ).all()
         zones = session.exec(select(ZonaEnvio)).all()
-    return categories, products, relations, zones
+    categories = {category.id: category for category, _, _ in rows}
+    products = {product.id: product for _, _, product in rows if product is not None}
+    relations = [relation for _, relation, product in rows if relation is not None and product is not None]
+    return list(categories.values()), list(products.values()), relations, zones
 
 
 class AuthState(rx.State):
@@ -364,6 +379,7 @@ class PublicOrderState(rx.State):
     detail_quantity: str = "1"
     nombre_apellido: str = ""
     telefono: str = ""
+    telefono_confirmacion: str = ""
     fecha_entrega: str = ""
     horario_entrega: str = ""
     direccion_delivery: str = ""
@@ -383,11 +399,29 @@ class PublicOrderState(rx.State):
     registered_order_code: str = ""
     whatsapp_url: str = ""
     submission_token: str = ""
+    is_loading_catalog: bool = True
+    catalog_error: str = ""
 
-    async def load_catalog(self) -> None:
+    async def load_catalog(self):
         self.message = ""
         self.technical_error = ""
-        categories, products, product_categories, zones = await asyncio.to_thread(_public_catalog_rows)
+        self.is_loading_catalog = True
+        self.catalog_error = ""
+        yield
+        try:
+            # The logo must not hold up the catalog in a separate event first.
+            rows, logo_url = await asyncio.gather(
+                asyncio.to_thread(catalog_cache.get, _public_catalog_rows),
+                asyncio.to_thread(brand_cache.get, _read_brand_logo_url),
+            )
+            brand = await self.get_state(BrandState)
+            brand.logo_url = _normalize_upload_path(logo_url)
+            categories, products, product_categories, zones = rows
+        except Exception as exc:
+            self.is_loading_catalog = False
+            self.catalog_error = "No pudimos cargar el catálogo. Presioná Reintentar."
+            self.technical_error = str(exc)
+            return
 
         category_names = {category.id: category.nombre for category in categories}
         category_codes = {category.id: category.codigo for category in categories}
@@ -446,6 +480,7 @@ class PublicOrderState(rx.State):
         ]
         if not self.view:
             self.view = "categories"
+        self.is_loading_catalog = False
 
     def show_categories(self) -> None:
         self.view = "categories"
@@ -579,16 +614,22 @@ class PublicOrderState(rx.State):
         if self.is_submitting or self.registered_order_code or self.is_updating_cart:
             return
         # Read the actual inputs, including the last keystroke still awaiting debounce.
-        for field in ("nombre_apellido", "telefono", "fecha_entrega", "horario_entrega", "direccion_delivery", "observaciones"):
+        for field in ("nombre_apellido", "telefono", "telefono_confirmacion", "fecha_entrega", "horario_entrega", "direccion_delivery", "observaciones"):
             if field in form_data:
                 setattr(self, field, str(form_data[field]))
         self.is_submitting = True
-        self.message = "Registrando tu pedido..."
+        self.message = ""
         self.technical_error = ""
         yield
         try:
             if not self.cart:
                 raise ValueError("Tu pedido esta vacio.")
+            normalized_phone = normalize_phone(self.telefono)
+            confirmation_phone = normalize_phone(self.telefono_confirmacion)
+            if normalized_phone != confirmation_phone:
+                raise ValueError("Los números de celular no coinciden. Revisalos antes de continuar.")
+            self.telefono = normalized_phone
+            self.telefono_confirmacion = normalized_phone
             delivery_date = _parse_delivery_date(self.fecha_entrega)
             self.fecha_entrega = _date_text(delivery_date)
             self.horario_entrega = _complete_time(self.horario_entrega)
@@ -693,6 +734,8 @@ class PublicOrderState(rx.State):
         self.whatsapp_url = ""
         self.submission_token = ""
         self.message = ""
+        self.telefono = ""
+        self.telefono_confirmacion = ""
         self.delivery_mode = "retiro"
         self.zona_envio_id = ""
         self.selected_zone_name = ""
@@ -714,7 +757,8 @@ class PublicOrderState(rx.State):
             "",
             f"Pedido: #{pedido_codigo}",
             f"Tienda: {STORE_NAME}",
-            f"Fecha: {now}",
+            f"Fecha del pedido: {now}",
+            f"Fecha de entrega: {self.fecha_entrega}",
             f"Nombre: {self.nombre_apellido}",
                 f"Telefono: {self.telefono}",
                 f"Horario ideal de entrega: {self.horario_entrega}hs",
@@ -1042,16 +1086,16 @@ class ExpenseState(rx.State):
         self.fecha = _mask_date(value)
 
     def set_motivo_nombre(self, value: str) -> None:
-        self.motivo_nombre = value.upper()
+        self.motivo_nombre = value
 
     def set_marca_nombre(self, value: str) -> None:
-        self.marca_nombre = value.upper()
+        self.marca_nombre = value
 
     def set_unidad_medida(self, value: str) -> None:
-        self.unidad_medida = value.upper()
+        self.unidad_medida = value
 
     def set_lugar_texto(self, value: str) -> None:
-        self.lugar_texto = value.upper()
+        self.lugar_texto = value
 
     def set_filter_date_from(self, value: str) -> None:
         self.filter_date_from = _mask_date(value)
@@ -1136,7 +1180,7 @@ class ExpenseState(rx.State):
                         select(GastoDetalle).where(GastoDetalle.gasto_id == gasto.id).order_by(GastoDetalle.id)
                     ).first()
                     gasto.fecha = expense_date
-                    gasto.lugar_texto = _upper_text(self.lugar_texto)
+                    gasto.lugar_texto = _clean_text(self.lugar_texto)
                     cantidad = _parse_quantity_input(self.cantidad)
                     precio_unitario = _parse_money_input(self.precio)
                     subtotal = (cantidad * precio_unitario).quantize(MONEY_QUANT)
@@ -1146,14 +1190,14 @@ class ExpenseState(rx.State):
                             motivo_gasto_id=motivo.id or 0,
                             marca_id=marca.id or 0,
                             cantidad=cantidad,
-                            unidad_medida=_upper_text(self.unidad_medida),
+                            unidad_medida=_clean_text(self.unidad_medida),
                             precio_unitario=precio_unitario,
                             subtotal=subtotal,
                         )
                     detail.motivo_gasto_id = motivo.id or 0
                     detail.marca_id = marca.id or 0
                     detail.cantidad = cantidad
-                    detail.unidad_medida = _upper_text(self.unidad_medida)
+                    detail.unidad_medida = _clean_text(self.unidad_medida)
                     detail.precio_unitario = precio_unitario
                     detail.subtotal = (detail.cantidad * detail.precio_unitario).quantize(MONEY_QUANT)
                     gasto.monto_total = detail.subtotal
@@ -1164,12 +1208,12 @@ class ExpenseState(rx.State):
                 else:
                     payload = ExpenseInput(
                         fecha=expense_date,
-                        motivo_nombre=_upper_text(self.motivo_nombre),
-                        marca_nombre=_upper_text(self.marca_nombre),
+                        motivo_nombre=_clean_text(self.motivo_nombre),
+                        marca_nombre=_clean_text(self.marca_nombre),
                         cantidad=_parse_quantity_input(self.cantidad),
-                        unidad_medida=_upper_text(self.unidad_medida),
+                        unidad_medida=_clean_text(self.unidad_medida),
                         precio=_parse_money_input(self.precio),
-                        lugar_texto=_upper_text(self.lugar_texto),
+                        lugar_texto=_clean_text(self.lugar_texto),
                     )
                     gasto_read = ExpenseService(session).create_expense(payload, auth.current_user())
                     message = f"Gasto {gasto_read.codigo} agregado."
@@ -1393,19 +1437,19 @@ class CatalogAdminState(rx.State):
         self.product_featured = bool(selected.get("destacado", False))
 
     def set_category_nombre(self, value: str) -> None:
-        self.category_nombre = value.upper()
+        self.category_nombre = value
 
     def set_category_descripcion(self, value: str) -> None:
-        self.category_descripcion = value.upper()
+        self.category_descripcion = value
 
     def set_product_description(self, value: str) -> None:
-        self.product_description = value.upper()
+        self.product_description = value
 
     def set_promo_codigo(self, value: str) -> None:
         self.promo_codigo = value.upper()
 
     def set_promo_nombre(self, value: str) -> None:
-        self.promo_nombre = value.upper()
+        self.promo_nombre = value
 
     def set_promo_precio_total(self, value: str) -> None:
         self.promo_precio_total = value
@@ -1427,8 +1471,8 @@ class CatalogAdminState(rx.State):
                 category = session.get(Categoria, int(self.selected_category_id))
                 if category is None:
                     raise ValueError("Categoria inexistente.")
-                category.nombre = _upper_text(self.category_nombre) or category.nombre
-                category.descripcion_publica = _upper_text(self.category_descripcion) or None
+                category.nombre = _clean_text(self.category_nombre) or category.nombre
+                category.descripcion_publica = _clean_text(self.category_descripcion) or None
                 category.orden = int(self.category_orden or "0")
                 category.visible_cliente = self.category_visible
                 session.add(category)
@@ -1463,7 +1507,7 @@ class CatalogAdminState(rx.State):
                 if product_category is None:
                     raise ValueError("Producto de categoria inexistente.")
                 product_category.precio = _parse_money_input(self.product_price)
-                product_category.descripcion_publica = _upper_text(self.product_description) or None
+                product_category.descripcion_publica = _clean_text(self.product_description) or None
                 product_category.orden = int(self.product_order or "0")
                 product_category.visible = self.product_visible
                 product_category.destacado = self.product_featured
@@ -1508,7 +1552,7 @@ class CatalogAdminState(rx.State):
                     producto_id=product_id,
                     categoria_id=int(self.selected_category_id),
                     precio=_parse_money_input(self.product_price or "0"),
-                    descripcion_publica=_upper_text(self.product_description) or None,
+                    descripcion_publica=_clean_text(self.product_description) or None,
                     foto_url=None,
                     visible=self.product_visible,
                     orden=int(self.product_order or "0"),
@@ -1755,7 +1799,7 @@ class CatalogAdminState(rx.State):
                 else:
                     promo = Promocion(
                         codigo=_upper_text(self.promo_codigo),
-                        nombre=_upper_text(self.promo_nombre),
+                        nombre=_clean_text(self.promo_nombre),
                         tipo=TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
                         cantidad_minima=int(self.promo_cantidad_minima),
                         precio_unitario_promocional=unit_price,
@@ -1766,7 +1810,7 @@ class CatalogAdminState(rx.State):
                     session.flush()
                     action = "agregada"
                 promo.codigo = _upper_text(self.promo_codigo)
-                promo.nombre = _upper_text(self.promo_nombre)
+                promo.nombre = _clean_text(self.promo_nombre)
                 promo.cantidad_minima = int(self.promo_cantidad_minima)
                 promo.precio_unitario_promocional = unit_price
                 promo.precio_total_promocional = package_total

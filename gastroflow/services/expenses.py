@@ -89,7 +89,7 @@ class ExpenseService:
         gasto = Gasto(
             codigo=next_business_code(self.session, "gasto_codigo_seq", "GAS"),
             fecha=data.fecha,
-            lugar_texto=normalize_catalog_name(data.lugar_texto),
+            lugar_texto=normalize_display_text(data.lugar_texto),
             lugar_lat=data.lugar_lat,
             lugar_lng=data.lugar_lng,
             observaciones=data.observaciones.strip() if data.observaciones else None,
@@ -105,7 +105,7 @@ class ExpenseService:
                     marca_id=marca.id or 0,
                     descripcion=normalize_optional_text(item.descripcion),
                     cantidad=self._quantity(item.cantidad),
-                    unidad_medida=normalize_catalog_name(item.unidad_medida),
+                    unidad_medida=normalize_display_text(item.unidad_medida),
                     precio_unitario=self._money(item.precio_unitario),
                     subtotal=subtotal,
                 )
@@ -115,7 +115,7 @@ class ExpenseService:
         return self._to_read(gasto)
 
     def _get_or_create_motivo(self, nombre: str) -> MotivoGasto:
-        normalized = normalize_catalog_name(nombre)
+        normalized = normalize_display_text(nombre)
         motivo = self.session.exec(
             select(MotivoGasto).where(func.lower(MotivoGasto.nombre) == normalized.lower())
         ).first()
@@ -128,7 +128,7 @@ class ExpenseService:
         return motivo
 
     def _get_or_create_marca(self, nombre: str) -> Marca:
-        normalized = normalize_catalog_name(nombre)
+        normalized = normalize_display_text(nombre)
         marca = self.session.exec(
             select(Marca).where(func.lower(Marca.nombre) == normalized.lower())
         ).first()
@@ -188,10 +188,15 @@ class ExpenseService:
 
 
 def normalize_catalog_name(value: str) -> str:
-    return " ".join(value.strip().split()).upper()
+    """Backward-compatible alias for cleaned display text."""
+    return normalize_display_text(value)
+
+
+def normalize_display_text(value: str) -> str:
+    return " ".join(value.strip().split())
 
 
 def normalize_optional_text(value: str | None) -> str | None:
     if not value or not value.strip():
         return None
-    return normalize_catalog_name(value)
+    return normalize_display_text(value)

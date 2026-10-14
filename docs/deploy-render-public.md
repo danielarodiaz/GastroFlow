@@ -59,13 +59,16 @@ La gestion de pedidos, gastos, catalogo y promociones debe hacerse desde Streaml
 ## Actualización del carrito y la confirmación
 
 Antes de desplegar esta versión, ejecutar `python -m alembic upgrade head` con la
-conexión de Supabase. La migración `0006_public_order_safety` agrega un identificador
-único de confirmación y reglas de mayúsculas para los textos de negocio de todas
-las apps. También normaliza los textos existentes. No modifica contraseñas, hashes,
-URLs de imágenes, configuración ni enums. Si existen valores únicos que solo
-difieren en mayúsculas/minúsculas, detiene la migración antes de modificar datos;
-resolver esos duplicados manualmente y volver a ejecutar. La reversión elimina
-las reglas, pero no recupera las mayúsculas/minúsculas originales de los textos.
+conexión de Supabase. Las migraciones agregan el identificador único de confirmación
+y separan presentación de normalización. Nombres, títulos, descripciones,
+direcciones y observaciones conservan la escritura ingresada. Códigos internos y
+usuarios se normalizan en mayúsculas. Marcas, motivos y usuarios se comparan sin
+distinguir mayúsculas/minúsculas. Si hay valores ya duplicados que resultan
+equivalentes, la migración se detiene para que se resuelvan manualmente.
+
+Los textos que una migración anterior ya convirtió a mayúsculas no pueden recuperar
+su formato original automáticamente. El administrador puede editarlos una vez y
+desde entonces se conservará la escritura elegida.
 
 El formulario conserva la escritura del cliente hasta guardar. Agregar al carrito
 muestra una notificación. Fecha sin año usa el año actual de Argentina y una hora
@@ -84,3 +87,27 @@ el enlace no demuestra que se haya enviado.
 Verificar en Chrome y en un teléfono: alternar envío/retiro, escribir y confirmar
 sin esperar, hacer varios clics al confirmar y abrir WhatsApp desde el enlace de
 recuperación. En la base debe quedar un solo pedido por confirmación.
+
+La carga pública usa dos consultas: categorías/productos visibles en un JOIN y
+zonas de envío. El logo se lee en paralelo. Los datos de catálogo y logo se
+comparten durante 30 segundos por proceso del servidor; cambios desde Streamlit
+pueden tardar hasta 30 segundos en aparecer en una nueva carga. Los precios al
+confirmar siguen consultándose en la base, sin usar esa caché. Las imágenes del
+catálogo se cargan a medida que se acercan al área visible.
+
+Al confirmar queda solo el texto de carga junto al spinner. El resumen de
+WhatsApp incluye por separado la fecha del pedido y la fecha de entrega.
+
+El celular se guarda como número nacional argentino de 10 dígitos y funciona como
+identificador del cliente. Se aceptan formatos con `+54 9`, `0`, espacios y
+guiones. El formulario exige repetirlo; un número incompleto, como uno de nueve
+dígitos, se rechaza antes de guardar. Dos formatos equivalentes reutilizan el
+mismo cliente. Esto valida estructura y reduce errores de tipeo, pero comprobar
+que el número existe o pertenece al cliente requeriría verificación por WhatsApp
+o SMS.
+
+La migración convierte al formato nacional los celulares históricos que sean
+estructuralmente válidos. Los registros históricos incompletos quedan visibles
+para corregirlos manualmente. Si dos clientes existentes terminan con el mismo
+celular normalizado, la migración se detiene sin fusionarlos para evitar asociar
+pedidos automáticamente al cliente equivocado.

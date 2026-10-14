@@ -1,4 +1,4 @@
-"""Idempotent public checkout and uppercase business text on every database write."""
+"""Idempotent public checkout and normalized technical identifiers."""
 
 from alembic import op
 import sqlalchemy as sa
@@ -10,15 +10,12 @@ depends_on = None
 
 # Explicit list: passwords, URLs, configuration keys and enum values are technical data.
 FIELDS = {
-    "categoria": ("codigo", "nombre", "descripcion_publica"),
-    "producto": ("codigo", "nombre", "descripcion"),
-    "producto_categoria": ("descripcion_publica",),
-    "promocion": ("codigo", "nombre"),
-    "zona_envio": ("nombre",), "motivo_gasto": ("nombre",), "marca": ("nombre",),
-    "usuario": ("username",), "cliente": ("nombre_apellido", "telefono"),
-    "pedido": ("codigo", "direccion_delivery", "observaciones"),
-    "gasto": ("codigo", "lugar_texto", "observaciones"),
-    "gasto_detalle": ("descripcion", "unidad_medida"),
+    "categoria": ("codigo",),
+    "producto": ("codigo",),
+    "promocion": ("codigo",),
+    "usuario": ("username",),
+    "pedido": ("codigo",),
+    "gasto": ("codigo",),
 }
 
 
