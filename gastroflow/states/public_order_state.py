@@ -170,7 +170,6 @@ class PublicOrderState(rx.State):
     detail_quantity: str = "1"
     nombre_apellido: str = ""
     telefono: str = ""
-    telefono_confirmacion: str = ""
     fecha_entrega: str = ""
     horario_entrega: str = ""
     direccion_delivery: str = ""
@@ -405,7 +404,7 @@ class PublicOrderState(rx.State):
         if self.is_submitting or self.registered_order_code or self.is_updating_cart:
             return
         # Read the actual inputs, including the last keystroke still awaiting debounce.
-        for field in ("nombre_apellido", "telefono", "telefono_confirmacion", "fecha_entrega", "horario_entrega", "direccion_delivery", "observaciones"):
+        for field in ("nombre_apellido", "telefono", "fecha_entrega", "horario_entrega", "direccion_delivery", "observaciones"):
             if field in form_data:
                 setattr(self, field, str(form_data[field]))
         self.is_submitting = True
@@ -416,11 +415,7 @@ class PublicOrderState(rx.State):
             if not self.cart:
                 raise ValueError("Tu pedido esta vacio.")
             normalized_phone = normalize_phone(self.telefono)
-            confirmation_phone = normalize_phone(self.telefono_confirmacion)
-            if normalized_phone != confirmation_phone:
-                raise ValueError("Los números de celular no coinciden. Revisalos antes de continuar.")
             self.telefono = normalized_phone
-            self.telefono_confirmacion = normalized_phone
             delivery_date = _parse_delivery_date(self.fecha_entrega)
             self.fecha_entrega = _date_text(delivery_date)
             self.horario_entrega = _complete_time(self.horario_entrega)
@@ -526,7 +521,6 @@ class PublicOrderState(rx.State):
         self.submission_token = ""
         self.message = ""
         self.telefono = ""
-        self.telefono_confirmacion = ""
         self.delivery_mode = "retiro"
         self.zona_envio_id = ""
         self.selected_zone_name = ""

@@ -22,7 +22,6 @@ def _state():
     state.cart = [{"producto_id": 1, "cantidad": 1, "categoria_codigo": "LISTA_HORNO"}]
     state.nombre_apellido = "Daniela Diaz"
     state.telefono = "3815551234"
-    state.telefono_confirmacion = "3815551234"
     state.fecha_entrega = "14/10"
     state.horario_entrega = "21"
     return state
@@ -173,15 +172,15 @@ def test_same_normalized_phone_reuses_customer_and_updates_display_name():
         assert second.nombre_apellido == "Daniela Diaz"
 
 
-def test_confirmation_rejects_mismatched_phone_before_saving(monkeypatch):
+def test_confirmation_rejects_invalid_phone_before_saving(monkeypatch):
     calls = []
     monkeypatch.setattr(app_state, "_create_public_order", lambda payload: calls.append(payload))
     state = _state()
-    state.telefono_confirmacion = "3815559999"
+    state.telefono = "381543860"
 
     async def run():
         _ = [event async for event in state.submit_order({})]
 
     asyncio.run(run())
     assert not calls
-    assert "no coinciden" in state.message
+    assert "10 dígitos" in state.message

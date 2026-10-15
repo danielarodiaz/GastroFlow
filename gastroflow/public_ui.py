@@ -101,6 +101,7 @@ def input_style() -> dict[str, object]:
         "color": GREEN,
         "font_weight": "700",
         "& input::placeholder": {"color": "#514332", "opacity": "1"},
+        "& textarea::placeholder": {"color": "#514332", "opacity": "1"},
         "&::placeholder": {"color": "#514332", "opacity": "1"},
     }
 
@@ -510,18 +511,6 @@ def cart_view() -> rx.Component:
                         rx.text(
                             "Ingresá 10 dígitos. También podés usar +54 9 o 0 delante del código de área.",
                             color="#514332", font_size="0.78rem",
-                        ),
-                        field(
-                            "Repetir celular",
-                            rx.input(
-                                value=PublicOrderState.telefono_confirmacion,
-                                name="telefono_confirmacion",
-                                on_change=PublicOrderState.set_telefono_confirmacion,
-                                placeholder="Volvé a escribir el número",
-                                input_mode="tel",
-                                style=input_style(),
-                                _placeholder=placeholder_style(),
-                            ),
                         ),
                         field(
                             "Fecha de entrega",
