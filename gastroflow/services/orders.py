@@ -25,7 +25,6 @@ from gastroflow.models import (
     UsuarioRead,
     ZonaEnvio,
 )
-from gastroflow.services.auth import AuthService
 from gastroflow.services.codes import next_business_code
 
 MONEY_QUANT = Decimal("0.01")
@@ -153,6 +152,8 @@ class OrderService:
         next_state: EstadoPedido,
         current_user: UsuarioRead,
     ) -> PedidoRead:
+        from gastroflow.services.auth import AuthService
+
         AuthService(self.session).require_owner_or_admin(current_user)
         pedido = self.session.get(Pedido, pedido_id)
         if pedido is None:

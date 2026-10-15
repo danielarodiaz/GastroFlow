@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import reflex as rx
 
-from gastroflow.app import health_page, public_page
-from gastroflow.states.app_state import PublicOrderState
+from gastroflow.public_ui import health_page, public_page
+from gastroflow.states.public_order_state import PublicOrderState
 
 
 app = rx.App()

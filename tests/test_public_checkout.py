@@ -13,8 +13,8 @@ from gastroflow.domain.enums import FormaPago, RolUsuario
 from gastroflow.models import Categoria, Cliente, Pedido, PedidoItem, Usuario
 from gastroflow.services.auth import AuthService
 from gastroflow.services.orders import OrderItemInput, OrderService, PricedItem, PublicOrderInput
-from gastroflow.states import app_state
-from gastroflow.states.app_state import PublicOrderState, _complete_time, _parse_delivery_date
+from gastroflow.states import public_order_state as app_state
+from gastroflow.states.public_order_state import PublicOrderState, _complete_time, _parse_delivery_date
 
 
 def _state():

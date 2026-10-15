@@ -3,7 +3,8 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    REFLEX_APP_MODULE_IMPORT=gastroflow.public_app
+    REFLEX_APP_MODULE_IMPORT=gastroflow.public_app \
+    GRANIAN_WORKERS=1
 
 WORKDIR /app
 
@@ -19,11 +20,11 @@ COPY . .
 
 RUN APP_SECRET_KEY=build-time-secret \
     DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/database \
-    reflex compile --loglevel warning --no-rich
+    reflex export --env prod --frontend-only --no-zip --loglevel warning
 
-EXPOSE 3000
+EXPOSE 10000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD curl -f http://127.0.0.1:3000/ping || exit 1
+    CMD curl -f "http://127.0.0.1:${PORT:-10000}/ping" || exit 1
 
-CMD ["reflex", "run", "--env", "prod", "--single-port", "--backend-port", "3000", "--backend-host", "0.0.0.0"]
+CMD ["python", "-m", "gastroflow.render_public"]

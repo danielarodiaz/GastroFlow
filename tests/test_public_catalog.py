@@ -9,8 +9,8 @@ from gastroflow.domain.enums import UnidadVenta
 from gastroflow.models import Categoria, Producto, ProductoCategoria, ZonaEnvio
 from gastroflow.services import public_catalog
 from gastroflow.services.public_catalog import PublicReadCache, brand_cache, catalog_cache
-from gastroflow.states import app_state
-from gastroflow.states.app_state import PublicOrderState
+from gastroflow.states import public_order_state as app_state
+from gastroflow.states.public_order_state import PublicOrderState
 
 
 def test_catalog_cache_shares_reads_and_expires(monkeypatch):

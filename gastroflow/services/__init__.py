@@ -1,20 +1,32 @@
-from gastroflow.services.admin_crud import AdminCrudService, CRUD_TABLES
-from gastroflow.services.auth import AuthService
-from gastroflow.services.expenses import ExpenseDetailInput, ExpenseInput, ExpenseService, ExpenseTicketInput
-from gastroflow.services.orders import DEFAULT_CONTEXT_CODE, CreatedOrderResult, OrderItemInput, OrderService, PublicOrderInput, normalize_phone
+from __future__ import annotations
 
-__all__ = [
-    "AuthService",
-    "AdminCrudService",
-    "CRUD_TABLES",
-    "CreatedOrderResult",
-    "ExpenseDetailInput",
-    "ExpenseInput",
-    "ExpenseService",
-    "ExpenseTicketInput",
-    "DEFAULT_CONTEXT_CODE",
-    "OrderItemInput",
-    "OrderService",
-    "PublicOrderInput",
-    "normalize_phone",
-]
+from importlib import import_module
+from typing import Any
+
+_EXPORTS = {
+    "AuthService": ("gastroflow.services.auth", "AuthService"),
+    "AdminCrudService": ("gastroflow.services.admin_crud", "AdminCrudService"),
+    "CRUD_TABLES": ("gastroflow.services.admin_crud", "CRUD_TABLES"),
+    "ExpenseDetailInput": ("gastroflow.services.expenses", "ExpenseDetailInput"),
+    "ExpenseInput": ("gastroflow.services.expenses", "ExpenseInput"),
+    "ExpenseService": ("gastroflow.services.expenses", "ExpenseService"),
+    "ExpenseTicketInput": ("gastroflow.services.expenses", "ExpenseTicketInput"),
+    "DEFAULT_CONTEXT_CODE": ("gastroflow.services.orders", "DEFAULT_CONTEXT_CODE"),
+    "CreatedOrderResult": ("gastroflow.services.orders", "CreatedOrderResult"),
+    "OrderItemInput": ("gastroflow.services.orders", "OrderItemInput"),
+    "OrderService": ("gastroflow.services.orders", "OrderService"),
+    "PublicOrderInput": ("gastroflow.services.orders", "PublicOrderInput"),
+    "normalize_phone": ("gastroflow.services.orders", "normalize_phone"),
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    try:
+        module_name, attribute_name = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+    value = getattr(import_module(module_name), attribute_name)
+    globals()[name] = value
+    return value
