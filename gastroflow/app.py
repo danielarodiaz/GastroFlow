@@ -266,8 +266,8 @@ def order_filters() -> rx.Component:
     return panel(
         rx.grid(
             field("Mes", rx.select(OperationsState.month_options, value=OperationsState.filter_month, on_change=OperationsState.set_filter_month, placeholder="Todos", style=select_style())),
-            field("Desde", rx.input(value=OperationsState.filter_date_from, on_change=OperationsState.set_filter_date_from, placeholder="DD/MM/AAAA", max_length=10, style=input_style(), _placeholder=placeholder_style())),
-            field("Hasta", rx.input(value=OperationsState.filter_date_to, on_change=OperationsState.set_filter_date_to, placeholder="DD/MM/AAAA", max_length=10, style=input_style(), _placeholder=placeholder_style())),
+            field("Desde", rx.input(value=OperationsState.filter_date_from, on_change=OperationsState.set_filter_date_from, placeholder="DD-MM-AAAA", max_length=10, style=input_style(), _placeholder=placeholder_style())),
+            field("Hasta", rx.input(value=OperationsState.filter_date_to, on_change=OperationsState.set_filter_date_to, placeholder="DD-MM-AAAA", max_length=10, style=input_style(), _placeholder=placeholder_style())),
             field("Categoria", rx.select(OperationsState.category_options, value=OperationsState.filter_category, on_change=OperationsState.set_filter_category, placeholder="Todos", style=select_style())),
             field("Cliente", rx.input(value=OperationsState.filter_client, on_change=OperationsState.set_filter_client, placeholder="Cliente", style=input_style(), _placeholder=placeholder_style())),
             field("Pago", rx.select(OperationsState.payment_options, value=OperationsState.filter_payment, on_change=OperationsState.set_filter_payment, placeholder="Todos", style=select_style())),
@@ -412,7 +412,7 @@ def expense_form_modal() -> rx.Component:
                             outline_button("Cerrar", on_click=ExpenseState.close_form),
                             width="100%",
                         ),
-                        field("Fecha", rx.input(value=ExpenseState.fecha, on_change=ExpenseState.set_fecha, placeholder="DD/MM/AAAA", max_length=10, style=input_style(), _placeholder=placeholder_style())),
+                        field("Fecha", rx.input(value=ExpenseState.fecha, on_change=ExpenseState.set_fecha, placeholder="DD-MM-AAAA", max_length=10, style=input_style(), _placeholder=placeholder_style())),
                         field("Motivo", rx.input(value=ExpenseState.motivo_nombre, on_change=ExpenseState.set_motivo_nombre, placeholder="Ej: ACEITE GIRA-SOL", style=input_style(), _placeholder=placeholder_style())),
                         field("Marca", rx.input(value=ExpenseState.marca_nombre, on_change=ExpenseState.set_marca_nombre, placeholder="Ej: AVICOLA CRUZ PAPAL", style=input_style(), _placeholder=placeholder_style())),
                         rx.grid(
@@ -484,8 +484,8 @@ def expense_filters() -> rx.Component:
     return panel(
         rx.grid(
             field("Mes", rx.select(ExpenseState.month_options, value=ExpenseState.filter_month, on_change=ExpenseState.set_filter_month, placeholder="Todos", style=select_style())),
-            field("Desde", rx.input(value=ExpenseState.filter_date_from, on_change=ExpenseState.set_filter_date_from, placeholder="DD/MM/AAAA", max_length=10, style=input_style(), _placeholder=placeholder_style())),
-            field("Hasta", rx.input(value=ExpenseState.filter_date_to, on_change=ExpenseState.set_filter_date_to, placeholder="DD/MM/AAAA", max_length=10, style=input_style(), _placeholder=placeholder_style())),
+            field("Desde", rx.input(value=ExpenseState.filter_date_from, on_change=ExpenseState.set_filter_date_from, placeholder="DD-MM-AAAA", max_length=10, style=input_style(), _placeholder=placeholder_style())),
+            field("Hasta", rx.input(value=ExpenseState.filter_date_to, on_change=ExpenseState.set_filter_date_to, placeholder="DD-MM-AAAA", max_length=10, style=input_style(), _placeholder=placeholder_style())),
             field("Motivo", rx.input(value=ExpenseState.filter_motivo, on_change=ExpenseState.set_filter_motivo, placeholder="Motivo", style=input_style(), _placeholder=placeholder_style())),
             field("Marca", rx.input(value=ExpenseState.filter_marca, on_change=ExpenseState.set_filter_marca, placeholder="Marca", style=input_style(), _placeholder=placeholder_style())),
             field("Lugar", rx.input(value=ExpenseState.filter_lugar, on_change=ExpenseState.set_filter_lugar, placeholder="Lugar", style=input_style(), _placeholder=placeholder_style())),

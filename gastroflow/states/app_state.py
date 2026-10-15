@@ -212,7 +212,7 @@ def _parse_delivery_date(value: str) -> date:
     clean = value.strip()
     if "-" in clean and len(clean.split("-")[0]) == 4:
         return date.fromisoformat(clean)
-    parts = clean.split("/")
+    parts = clean.replace("/", "-").split("-")
     if len(parts) == 2:
         parts.append(str(datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).year))
     day, month, year = parts
@@ -220,7 +220,7 @@ def _parse_delivery_date(value: str) -> date:
 
 
 def _date_text(value: date) -> str:
-    return value.strftime("%d/%m/%Y")
+    return value.strftime("%d-%m-%Y")
 
 
 def _date_key(value: str) -> str:
@@ -237,8 +237,8 @@ def _mask_date(value: str) -> str:
     if len(digits) <= 2:
         return digits
     if len(digits) <= 4:
-        return f"{digits[:2]}/{digits[2:]}"
-    return f"{digits[:2]}/{digits[2:4]}/{digits[4:]}"
+        return f"{digits[:2]}-{digits[2:]}"
+    return f"{digits[:2]}-{digits[2:4]}-{digits[4:]}"
 
 
 def _mask_time(value: str) -> str:

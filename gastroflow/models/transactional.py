@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Optional
 
@@ -57,6 +57,7 @@ class ClienteRead(ClienteBase):
 class PedidoBase(SQLModel):
     codigo: str = Field(index=True, unique=True, max_length=30)
     fecha_entrega: date
+    horario_entrega: Optional[time] = None
     cliente_id: int = Field(foreign_key="cliente.id")
     direccion_delivery: str
     direccion_lat: Optional[Decimal] = Field(default=None, sa_column=coordinate_column())

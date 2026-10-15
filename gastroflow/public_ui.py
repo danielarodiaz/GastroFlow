@@ -519,7 +519,7 @@ def cart_view() -> rx.Component:
                                 name="fecha_entrega",
                                 on_change=PublicOrderState.set_fecha_entrega,
                                 on_blur=PublicOrderState.complete_delivery_date,
-                                placeholder="DD/MM (año opcional)",
+                                placeholder="DD-MM (año opcional)",
                                 max_length=10,
                                 input_mode="numeric",
                                 style=input_style(),

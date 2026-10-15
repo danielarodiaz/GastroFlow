@@ -1,5 +1,5 @@
 import asyncio
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -96,6 +96,7 @@ def test_confirmation_shows_loading_and_repeated_clicks_save_once(monkeypatch):
     asyncio.run(run())
     assert len(calls) == 1
     assert calls[0].nombre_apellido == "Daniela Diaz"
+    assert calls[0].horario_entrega == time(21, 0)
 
 
 def test_whatsapp_includes_order_date_and_separate_delivery_date():
@@ -135,7 +136,7 @@ def test_database_retry_returns_existing_order_and_preserves_display_text(monkey
         subtotal=Decimal("100"), requiere_confirmacion=False,
     )])
     payload = PublicOrderInput(nombre_apellido="Daniela Díaz", telefono="3815551234",
-        fecha_entrega=date(2026, 10, 14), direccion_delivery="San Martín 25",
+        fecha_entrega=date(2026, 10, 14), horario_entrega=time(21, 0), direccion_delivery="San Martín 25",
         forma_pago=FormaPago.EFECTIVO, items=[item], observaciones="Sin cebolla",
         submission_token="test-checkout-token")
     with Session(engine) as session:
@@ -148,6 +149,7 @@ def test_database_retry_returns_existing_order_and_preserves_display_text(monkey
         customer = session.exec(select(Cliente)).one()
         assert customer.nombre_apellido == "Daniela Díaz"
         assert duplicate.pedido.direccion_delivery == "San Martín 25"
+        assert duplicate.pedido.horario_entrega == time(21, 0)
         assert duplicate.pedido.observaciones == "Sin cebolla"
         customer.nombre_apellido = "daniela diaz"
         session.commit()

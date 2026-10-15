@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -80,7 +80,7 @@ def _parse_delivery_date(value: str) -> date:
     clean = value.strip()
     if "-" in clean and len(clean.split("-")[0]) == 4:
         return date.fromisoformat(clean)
-    parts = clean.split("/")
+    parts = clean.replace("/", "-").split("-")
     if len(parts) == 2:
         parts.append(str(datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).year))
     day, month, year = parts
@@ -88,7 +88,7 @@ def _parse_delivery_date(value: str) -> date:
 
 
 def _date_text(value: date) -> str:
-    return value.strftime("%d/%m/%Y")
+    return value.strftime("%d-%m-%Y")
 
 
 def _mask_date(value: str) -> str:
@@ -96,8 +96,8 @@ def _mask_date(value: str) -> str:
     if len(digits) <= 2:
         return digits
     if len(digits) <= 4:
-        return f"{digits[:2]}/{digits[2:]}"
-    return f"{digits[:2]}/{digits[2:4]}/{digits[4:]}"
+        return f"{digits[:2]}-{digits[2:]}"
+    return f"{digits[:2]}-{digits[2:4]}-{digits[4:]}"
 
 
 def _mask_time(value: str) -> str:
@@ -436,6 +436,7 @@ class PublicOrderState(rx.State):
                 nombre_apellido=self.nombre_apellido,
                 telefono=self.telefono,
                 fecha_entrega=delivery_date,
+                horario_entrega=time.fromisoformat(self.horario_entrega),
                 direccion_delivery=self.direccion_delivery if self.delivery_mode == "delivery" else "Retiro en el local",
                 zona_envio_id=int(self.zona_envio_id) if self.delivery_mode == "delivery" and self.zona_envio_id else None,
                 forma_pago=FormaPago(self.forma_pago),
@@ -535,7 +536,7 @@ class PublicOrderState(rx.State):
         return Decimal(str(selected["costo"])) if selected else Decimal("0.00")
 
     def _build_whatsapp_url(self, pedido_codigo: str, total: Decimal) -> str:
-        now = datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).strftime("%d/%m/%y - %H:%Mhs")
+        now = datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).strftime("%d-%m-%Y - %H:%Mhs")
         delivery_label = "Delivery" if self.delivery_mode == "delivery" else "Retiro del local"
         lines = [
             "¡Hola! Te paso el resumen de mi pedido",

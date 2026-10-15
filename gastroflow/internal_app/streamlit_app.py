@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import json
 import mimetypes
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from typing import Any
 
 import streamlit as st
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from gastroflow.data.database import engine
-from gastroflow.domain.enums import EstadoPedido, RolUsuario, TipoPromocion
+from gastroflow.domain.enums import EstadoPedido, RolUsuario, TipoPromocion, UnidadVenta
 from gastroflow.domain.errors import DomainError
 from gastroflow.domain.order_state import valid_next_states
 from gastroflow.models import (
@@ -139,6 +142,8 @@ def _render_orders() -> None:
         sum(1 for row in orders if row["estado"] == EstadoPedido.EN_PROCESO.value),
     )
 
+    _render_production_summary(orders)
+
     if not orders:
         st.info("Todavia no hay pedidos.")
         return
@@ -148,23 +153,47 @@ def _render_orders() -> None:
             cols = st.columns([1.1, 1.4, 1.2, 1.2, 1.1, 1])
             cols[0].markdown(f"**{row['codigo']}**")
             cols[1].write(row["cliente"])
-            cols[2].write(row["fecha_entrega"])
-            cols[3].write(row["estado"])
+            cols[2].write(f"{row['fecha_entrega']} · {row['horario_entrega']}")
+            cols[3].markdown(_state_badge(row["estado"]), unsafe_allow_html=True)
             cols[4].write(_money_text(row["monto_total"]))
             if cols[5].button("Ver detalles", key=f"order_detail_{row['id']}", use_container_width=True):
                 st.session_state.selected_order_id = row["id"]
-                _show_order_detail(row["id"])
+                _show_order_detail(row)
 
             next_states = valid_next_states(EstadoPedido(row["estado"]))
             if next_states:
                 action_cols = st.columns(len(next_states))
                 for index, next_state in enumerate(sorted(next_states, key=lambda item: item.value)):
                     if action_cols[index].button(
-                        f"Pasar a {next_state.value}",
+                        _transition_label(next_state),
                         key=f"order_{row['id']}_{next_state.value}",
+                        type="primary" if next_state != EstadoPedido.CANCELADO else "secondary",
+                        use_container_width=True,
                     ):
                         _transition_order(row["id"], next_state)
+                        _load_order_rows.clear()
                         st.rerun()
+
+
+def _render_production_summary(orders: list[dict[str, Any]]) -> None:
+    summary = _build_production_summary(orders)
+    st.subheader("Produccion pendiente por fecha de entrega")
+    st.caption("Incluye pedidos pendientes y en proceso. No cuenta pedidos entregados ni cancelados.")
+    if not summary:
+        st.info("No hay productos pendientes de preparacion.")
+        return
+    for delivery_date, data in summary.items():
+        with st.container(border=True):
+            st.markdown(f"### {delivery_date} · {data['order_count']} pedidos")
+            if not data["categories"]:
+                st.caption("El pedido no tiene items cargados.")
+                continue
+            category_columns = st.columns(min(len(data["categories"]), 3))
+            for index, (category, products) in enumerate(data["categories"].items()):
+                with category_columns[index % len(category_columns)]:
+                    st.markdown(f"**{category}**")
+                    for product, quantity in products.items():
+                        st.write(f"{quantity} × {product}")
 
 
 def _render_expenses() -> None:
@@ -200,7 +229,7 @@ def _render_expenses() -> None:
 
 def _render_catalog() -> None:
     st.title("Catalogo")
-    categories, product_rows = _load_catalog_rows()
+    categories, product_rows, products = _load_catalog_rows()
     if _is_admin():
         _render_brand_media_editor()
     category_tab, product_tab = st.tabs(["Categorias", "Productos por categoria"])
@@ -231,6 +260,7 @@ def _render_catalog() -> None:
         if not _is_admin():
             st.info("Solo Admin puede modificar productos.")
         else:
+            _render_add_product_to_category(categories, products)
             _render_product_category_editor(product_rows)
 
 
@@ -276,9 +306,8 @@ def _render_admin() -> None:
                     else:
                         result = service.update_record(table_name, int(record_id or 0), payload, _current_user())
                 st.success(f"Guardado: {result}")
-                st.rerun()
             except Exception as exc:
-                st.error(str(exc))
+                _render_action_error("No se pudo guardar el registro.", exc)
     else:
         st.warning("Borrar registros puede afectar relaciones. Usar solo para correcciones controladas.")
         if st.button("Borrar registro", use_container_width=True):
@@ -286,11 +315,11 @@ def _render_admin() -> None:
                 with Session(engine) as session:
                     AdminCrudService(session).delete_record(table_name, int(record_id or 0), _current_user())
                 st.success("Registro borrado.")
-                st.rerun()
             except Exception as exc:
-                st.error(str(exc))
+                _render_action_error("No se pudo borrar el registro.", exc)
 
 
+@st.fragment
 def _render_brand_media_editor() -> None:
     with st.expander("Marca e imagenes", expanded=False):
         logo_url = _read_app_config(BRAND_LOGO_CONFIG_KEY)
@@ -303,15 +332,17 @@ def _render_brand_media_editor() -> None:
                 url = _save_uploaded_file(uploaded, "brand")
                 _write_app_config(BRAND_LOGO_CONFIG_KEY, url)
                 st.success("Logo actualizado.")
-                st.rerun()
             except Exception as exc:
-                st.error(str(exc))
+                _render_action_error("No se pudo subir el logo.", exc)
         if cols[1].button("Quitar logo", disabled=not logo_url):
-            _write_app_config(BRAND_LOGO_CONFIG_KEY, "")
-            st.success("Logo eliminado.")
-            st.rerun()
+            try:
+                _write_app_config(BRAND_LOGO_CONFIG_KEY, "")
+                st.success("Logo eliminado.")
+            except Exception as exc:
+                _render_action_error("No se pudo quitar el logo.", exc)
 
 
+@st.fragment
 def _render_category_editor(categories: list[Categoria]) -> None:
     if not categories:
         st.info("No hay categorias cargadas.")
@@ -329,20 +360,21 @@ def _render_category_editor(categories: list[Categoria]) -> None:
         activa = st.checkbox("Activa", value=bool(selected.activa))
         submitted = st.form_submit_button("Guardar categoria", use_container_width=True)
     if submitted:
-        with Session(engine) as session:
-            category = session.get(Categoria, selected.id)
-            if category is None:
-                st.error("Categoria inexistente.")
-                return
-            category.nombre = " ".join(nombre.strip().split())
-            category.descripcion_publica = " ".join(descripcion.strip().split()) or None
-            category.orden = int(orden)
-            category.visible_cliente = visible
-            category.activa = activa
-            session.add(category)
-            session.commit()
-        st.success("Categoria guardada.")
-        st.rerun()
+        try:
+            with Session(engine) as session:
+                category = session.get(Categoria, selected.id)
+                if category is None:
+                    raise ValueError("La categoria seleccionada ya no existe.")
+                category.nombre = " ".join(nombre.strip().split())
+                category.descripcion_publica = " ".join(descripcion.strip().split()) or None
+                category.orden = int(orden)
+                category.visible_cliente = visible
+                category.activa = activa
+                session.add(category)
+                session.commit()
+            st.success("Categoria guardada.")
+        except Exception as exc:
+            _render_action_error("No se pudo guardar la categoria.", exc)
     uploaded = st.file_uploader("Foto de categoria", type=["png", "jpg", "jpeg", "webp"], key=f"category_image_{selected.id}")
     upload_cols = st.columns([1, 1, 2])
     if upload_cols[0].button("Subir foto", disabled=uploaded is None, key=f"upload_category_{selected.id}"):
@@ -357,20 +389,120 @@ def _render_category_editor(categories: list[Categoria]) -> None:
                 session.add(category)
                 session.commit()
             st.success("Foto de categoria actualizada.")
-            st.rerun()
         except Exception as exc:
-            st.error(str(exc))
+            _render_action_error("No se pudo subir la foto de la categoria.", exc)
     if upload_cols[1].button("Quitar foto", key=f"delete_category_image_{selected.id}"):
-        with Session(engine) as session:
-            category = session.get(Categoria, selected.id)
-            if category is not None:
-                category.foto_url = None
-                session.add(category)
-                session.commit()
-        st.success("Foto de categoria eliminada.")
-        st.rerun()
+        try:
+            with Session(engine) as session:
+                category = session.get(Categoria, selected.id)
+                if category is not None:
+                    category.foto_url = None
+                    session.add(category)
+                    session.commit()
+            st.success("Foto de categoria eliminada.")
+        except Exception as exc:
+            _render_action_error("No se pudo quitar la foto de la categoria.", exc)
 
 
+@st.fragment
+def _render_add_product_to_category(categories: list[Categoria], products: list[Producto]) -> None:
+    if not categories:
+        st.info("Primero debes crear una categoria.")
+        return
+    with st.expander("Agregar producto a una categoria", expanded=False):
+        mode = st.radio(
+            "Producto",
+            ["Elegir producto existente", "Crear producto nuevo"],
+            horizontal=True,
+            key="add_product_mode",
+        )
+        category_options = {f"{category.id} | {category.nombre}": category.id for category in categories}
+        category_label = st.selectbox("Categoria", list(category_options), key="add_product_category")
+        product_options = {f"{product.id} | {product.nombre}": product.id for product in products}
+
+        with st.form("add_product_to_category_form"):
+            if mode == "Elegir producto existente":
+                if not product_options:
+                    st.info("No hay productos existentes. Elige Crear producto nuevo.")
+                    product_label = None
+                else:
+                    product_label = st.selectbox("Producto existente", list(product_options))
+                code = name = base_description = ""
+                unit = UnidadVenta.UNIDAD.value
+            else:
+                product_label = None
+                identity_cols = st.columns(2)
+                code = identity_cols[0].text_input("Codigo del producto")
+                name = identity_cols[1].text_input("Nombre del producto")
+                base_description = st.text_area("Descripcion general")
+                unit = st.selectbox("Unidad de venta", [item.value for item in UnidadVenta])
+
+            price_cols = st.columns([1, 1])
+            price = price_cols[0].number_input("Precio en esta categoria", min_value=0.0, value=0.0, step=100.0)
+            order = price_cols[1].number_input("Orden", min_value=0, value=0, step=1)
+            public_description = st.text_area("Descripcion publica en esta categoria")
+            flag_cols = st.columns(3)
+            visible = flag_cols[0].checkbox("Visible", value=True)
+            featured = flag_cols[1].checkbox("Destacado", value=False)
+            active = flag_cols[2].checkbox("Activo", value=True)
+            submitted = st.form_submit_button("Agregar a la categoria", use_container_width=True)
+
+        if submitted:
+            try:
+                if mode == "Elegir producto existente" and product_label is None:
+                    raise ValueError("Selecciona un producto o crea uno nuevo.")
+                with Session(engine) as session:
+                    if mode == "Crear producto nuevo":
+                        clean_code = " ".join(code.strip().split()).upper()
+                        clean_name = " ".join(name.strip().split())
+                        if not clean_code or not clean_name:
+                            raise ValueError("El codigo y el nombre del producto son obligatorios.")
+                        existing_product = session.exec(
+                            select(Producto).where(func.upper(Producto.codigo) == clean_code)
+                        ).first()
+                        if existing_product is not None:
+                            raise ValueError("Ya existe un producto con ese codigo. Elige el producto existente.")
+                        product = Producto(
+                            codigo=clean_code,
+                            nombre=clean_name,
+                            descripcion=" ".join(base_description.strip().split()) or None,
+                            unidad_venta=UnidadVenta(unit),
+                            activo=True,
+                        )
+                        session.add(product)
+                        session.flush()
+                        product_id = product.id or 0
+                    else:
+                        product_id = int(product_options[str(product_label)])
+
+                    category_id = int(category_options[category_label])
+                    existing_relation = session.exec(
+                        select(ProductoCategoria).where(
+                            ProductoCategoria.producto_id == product_id,
+                            ProductoCategoria.categoria_id == category_id,
+                        )
+                    ).first()
+                    if existing_relation is not None:
+                        raise ValueError("Ese producto ya pertenece a la categoria seleccionada.")
+                    session.add(
+                        ProductoCategoria(
+                            producto_id=product_id,
+                            categoria_id=category_id,
+                            precio=Decimal(str(price)).quantize(Decimal("0.01")),
+                            descripcion_publica=" ".join(public_description.strip().split()) or None,
+                            visible=visible,
+                            orden=int(order),
+                            destacado=featured,
+                            activo=active,
+                        )
+                    )
+                    session.commit()
+                st.success("Producto agregado a la categoria.")
+            except Exception as exc:
+                _render_action_error("No se pudo agregar el producto a la categoria.", exc)
+
+
+@st.fragment
 def _render_product_category_editor(product_rows: list[dict[str, Any]]) -> None:
     if not product_rows:
         st.info("No hay productos asociados a categorias.")
@@ -389,21 +521,22 @@ def _render_product_category_editor(product_rows: list[dict[str, Any]]) -> None:
         activo = st.checkbox("Activo", value=bool(selected["activo"]))
         submitted = st.form_submit_button("Guardar producto", use_container_width=True)
     if submitted:
-        with Session(engine) as session:
-            relation = session.get(ProductoCategoria, int(selected["relation_id"]))
-            if relation is None:
-                st.error("Relacion inexistente.")
-                return
-            relation.precio = Decimal(str(precio)).quantize(Decimal("0.01"))
-            relation.descripcion_publica = " ".join(descripcion.strip().split()) or None
-            relation.orden = int(orden)
-            relation.visible = visible
-            relation.destacado = destacado
-            relation.activo = activo
-            session.add(relation)
-            session.commit()
-        st.success("Producto actualizado.")
-        st.rerun()
+        try:
+            with Session(engine) as session:
+                relation = session.get(ProductoCategoria, int(selected["relation_id"]))
+                if relation is None:
+                    raise ValueError("La asociacion seleccionada ya no existe.")
+                relation.precio = Decimal(str(precio)).quantize(Decimal("0.01"))
+                relation.descripcion_publica = " ".join(descripcion.strip().split()) or None
+                relation.orden = int(orden)
+                relation.visible = visible
+                relation.destacado = destacado
+                relation.activo = activo
+                session.add(relation)
+                session.commit()
+            st.success("Producto actualizado.")
+        except Exception as exc:
+            _render_action_error("No se pudo actualizar el producto.", exc)
     uploaded = st.file_uploader("Foto del producto en esta categoria", type=["png", "jpg", "jpeg", "webp"], key=f"product_image_{selected['relation_id']}")
     upload_cols = st.columns([1, 1, 2])
     if upload_cols[0].button("Subir foto", disabled=uploaded is None, key=f"upload_product_{selected['relation_id']}"):
@@ -418,20 +551,22 @@ def _render_product_category_editor(product_rows: list[dict[str, Any]]) -> None:
                 session.add(relation)
                 session.commit()
             st.success("Foto de producto actualizada.")
-            st.rerun()
         except Exception as exc:
-            st.error(str(exc))
+            _render_action_error("No se pudo subir la foto del producto.", exc)
     if upload_cols[1].button("Quitar foto", key=f"delete_product_image_{selected['relation_id']}"):
-        with Session(engine) as session:
-            relation = session.get(ProductoCategoria, int(selected["relation_id"]))
-            if relation is not None:
-                relation.foto_url = None
-                session.add(relation)
-                session.commit()
-        st.success("Foto de producto eliminada.")
-        st.rerun()
+        try:
+            with Session(engine) as session:
+                relation = session.get(ProductoCategoria, int(selected["relation_id"]))
+                if relation is not None:
+                    relation.foto_url = None
+                    session.add(relation)
+                    session.commit()
+            st.success("Foto de producto eliminada.")
+        except Exception as exc:
+            _render_action_error("No se pudo quitar la foto del producto.", exc)
 
 
+@st.fragment
 def _render_promotion_editor(promos: list[Promocion], products: list[Producto]) -> None:
     promo_options = {"Nueva promo": None}
     promo_options.update({f"{promo.id} | {promo.nombre}": promo for promo in promos})
@@ -472,23 +607,29 @@ def _render_promotion_editor(promos: list[Promocion], products: list[Producto]) 
         )
         submitted = st.form_submit_button("Guardar promo", use_container_width=True)
     if submitted:
-        _save_promotion(
-            promo_id=selected.id if selected else None,
-            codigo=codigo,
-            nombre=nombre,
-            cantidad_minima=int(cantidad_minima),
-            precio_unitario=Decimal(str(precio_unitario)).quantize(Decimal("0.01")),
-            precio_total=Decimal(str(precio_total)).quantize(Decimal("0.01")) if precio_total else None,
-            activa=activa,
-            product_ids=[product_options[label] for label in chosen_products],
-        )
-        st.rerun()
+        try:
+            _save_promotion(
+                promo_id=selected.id if selected else None,
+                codigo=codigo,
+                nombre=nombre,
+                cantidad_minima=int(cantidad_minima),
+                precio_unitario=Decimal(str(precio_unitario)).quantize(Decimal("0.01")),
+                precio_total=Decimal(str(precio_total)).quantize(Decimal("0.01")) if precio_total else None,
+                activa=activa,
+                product_ids=[product_options[label] for label in chosen_products],
+            )
+        except Exception as exc:
+            _render_action_error("No se pudo guardar la promocion.", exc)
 
 
+@st.fragment
 def _render_expense_form() -> None:
+    expense_success_message = st.session_state.pop("expense_success_message", "")
+    if expense_success_message:
+        st.success(expense_success_message)
     st.caption("Carga un ticket completo: fecha y lugar una sola vez, luego agrega todos los items comprados.")
     header_cols = st.columns([1, 2])
-    fecha = header_cols[0].date_input("Fecha", key="expense_ticket_date")
+    fecha = header_cols[0].date_input("Fecha", key="expense_ticket_date", format="DD-MM-YYYY")
     lugar = header_cols[1].text_input("Lugar", key="expense_ticket_place")
 
     with st.form("expense_ticket_item_form", clear_on_submit=True):
@@ -498,7 +639,7 @@ def _render_expense_form() -> None:
         form_cols = st.columns(3)
         cantidad = form_cols[0].number_input("Cantidad", min_value=0.001, value=1.0, step=1.0)
         unidad = form_cols[1].text_input("Unidad", value="KG")
-        precio = form_cols[2].number_input("Precio unitario", min_value=0.0, value=0.0, step=100.0)
+        total_item = form_cols[2].number_input("Total del item", min_value=0.0, value=0.0, step=100.0)
         add_item = st.form_submit_button("Agregar item", use_container_width=True)
     if add_item:
         added = _add_expense_ticket_item(
@@ -507,10 +648,10 @@ def _render_expense_form() -> None:
             descripcion=descripcion,
             cantidad=Decimal(str(cantidad)),
             unidad=unidad,
-            precio=Decimal(str(precio)),
+            total_item=Decimal(str(total_item)),
         )
         if added:
-            st.rerun()
+            st.success("Item agregado al ticket.")
 
     _render_expense_ticket_items()
     action_cols = st.columns([1, 1, 2])
@@ -529,6 +670,7 @@ def _render_expense_form() -> None:
                                 cantidad=Decimal(str(item["cantidad"])),
                                 unidad_medida=item["unidad"],
                                 precio_unitario=Decimal(str(item["precio_unitario"])),
+                                subtotal=Decimal(str(item["subtotal"])),
                             )
                             for item in st.session_state.expense_ticket_items
                         ],
@@ -536,13 +678,14 @@ def _render_expense_form() -> None:
                     _current_user(),
                 )
             st.session_state.expense_ticket_items = []
-            st.success(f"Gasto {expense.codigo} guardado.")
-            st.rerun()
+            _load_expense_rows.clear()
+            st.session_state.expense_success_message = f"Gasto {expense.codigo} guardado."
+            st.rerun(scope="fragment")
         except Exception as exc:
-            st.error(str(exc))
+            _render_action_error("No se pudo guardar el gasto.", exc)
     if action_cols[1].button("Limpiar ticket", use_container_width=True, disabled=not st.session_state.expense_ticket_items):
         st.session_state.expense_ticket_items = []
-        st.rerun()
+        st.rerun(scope="fragment")
 
 
 def _add_expense_ticket_item(
@@ -552,7 +695,7 @@ def _add_expense_ticket_item(
     descripcion: str,
     cantidad: Decimal,
     unidad: str,
-    precio: Decimal,
+    total_item: Decimal,
 ) -> bool:
     if not motivo.strip() or not marca.strip() or not unidad.strip():
         st.warning("Motivo, marca y unidad son obligatorios para agregar un item.")
@@ -560,10 +703,11 @@ def _add_expense_ticket_item(
     if cantidad <= 0:
         st.warning("La cantidad debe ser mayor a cero.")
         return False
-    if precio < 0:
-        st.warning("El precio no puede ser negativo.")
+    if total_item < 0:
+        st.warning("El total no puede ser negativo.")
         return False
-    subtotal = (cantidad * precio).quantize(Decimal("0.01"))
+    subtotal = total_item.quantize(Decimal("0.01"))
+    precio_unitario = (subtotal / cantidad).quantize(Decimal("0.01"))
     st.session_state.expense_ticket_items = [
         *st.session_state.expense_ticket_items,
         {
@@ -572,7 +716,7 @@ def _add_expense_ticket_item(
             "descripcion": " ".join(descripcion.strip().split()),
             "cantidad": str(cantidad),
             "unidad": " ".join(unidad.strip().split()),
-            "precio_unitario": str(precio),
+            "precio_unitario": str(precio_unitario),
             "subtotal": str(subtotal),
         },
     ]
@@ -604,7 +748,7 @@ def _render_expense_ticket_items() -> None:
     if st.button("Quitar item", disabled=not remove_choice):
         index = remove_options.index(remove_choice)
         st.session_state.expense_ticket_items = [item for item_index, item in enumerate(items) if item_index != index]
-        st.rerun()
+        st.rerun(scope="fragment")
 
 
 def _render_placeholder(title: str) -> None:
@@ -612,24 +756,79 @@ def _render_placeholder(title: str) -> None:
     st.info("Seccion preparada. Se conectara a los servicios compartidos en la siguiente fase.")
 
 
+@st.cache_data(ttl=15, show_spinner=False)
 def _load_order_rows() -> list[dict[str, Any]]:
+    combo_product = aliased(Producto)
     with Session(engine) as session:
-        pedidos = session.exec(select(Pedido).order_by(Pedido.created_at.desc())).all()
-        clientes = {cliente.id: cliente for cliente in session.exec(select(Cliente)).all()}
-    return [
-        {
+        order_rows = session.exec(
+            select(Pedido, Cliente, ZonaEnvio)
+            .select_from(Pedido)
+            .join(Cliente, Cliente.id == Pedido.cliente_id)
+            .outerjoin(ZonaEnvio, ZonaEnvio.id == Pedido.zona_envio_id)
+        ).all()
+        detail_rows = session.exec(
+            select(PedidoItem, Producto, combo_product, Categoria)
+            .select_from(PedidoItem)
+            .join(Producto, Producto.id == PedidoItem.producto_id)
+            .outerjoin(combo_product, combo_product.id == PedidoItem.producto_combo_id)
+            .join(Categoria, Categoria.id == PedidoItem.categoria_venta_id)
+        ).all()
+
+    rows_by_id: dict[int, dict[str, Any]] = {}
+    for pedido, cliente, zona in order_rows:
+        order_id = pedido.id or 0
+        rows_by_id[order_id] = {
             "id": pedido.id or 0,
             "codigo": pedido.codigo,
-            "fecha_entrega": pedido.fecha_entrega.isoformat(),
-            "cliente": clientes[pedido.cliente_id].nombre_apellido if pedido.cliente_id in clientes else "",
-            "telefono": clientes[pedido.cliente_id].telefono if pedido.cliente_id in clientes else "",
+            "fecha_entrega": _date_text(pedido.fecha_entrega),
+            "fecha_entrega_raw": pedido.fecha_entrega,
+            "horario_entrega": pedido.horario_entrega.strftime("%H:%M") if pedido.horario_entrega else "Sin horario",
+            "horario_entrega_raw": pedido.horario_entrega,
+            "cliente": cliente.nombre_apellido,
+            "telefono": cliente.telefono,
             "estado": pedido.estado.value,
+            "direccion": pedido.direccion_delivery,
+            "zona": zona.nombre if zona else "Sin envio",
+            "costo_envio": pedido.costo_envio,
             "monto_total": pedido.monto_total,
+            "observaciones": pedido.observaciones or "",
+            "items": [],
         }
-        for pedido in pedidos
-    ]
+    for item, product, combo, category in detail_rows:
+        order = rows_by_id.get(item.pedido_id)
+        if order is None:
+            continue
+        order["items"].append(
+            {
+                "producto": product.nombre,
+                "combo": combo.nombre if combo else "",
+                "categoria": category.nombre,
+                "cantidad": item.cantidad,
+                "precio_unitario": _money_text(item.precio_unitario),
+                "subtotal": _money_text(item.subtotal),
+            }
+        )
+
+    status_order = {
+        EstadoPedido.PEDIDO.value: 0,
+        EstadoPedido.PENDIENTE_CONFIRMACION.value: 0,
+        EstadoPedido.EN_PROCESO.value: 1,
+        EstadoPedido.ENTREGADO.value: 2,
+        EstadoPedido.CANCELADO.value: 3,
+    }
+    return sorted(
+        rows_by_id.values(),
+        key=lambda row: (
+            row["estado"] == EstadoPedido.CANCELADO.value,
+            row["fecha_entrega_raw"],
+            row["horario_entrega_raw"] or time.max,
+            status_order.get(row["estado"], 9),
+            row["id"],
+        ),
+    )
 
 
+@st.cache_data(ttl=15, show_spinner=False)
 def _load_expense_rows() -> list[dict[str, Any]]:
     with Session(engine) as session:
         gastos = session.exec(select(Gasto).order_by(Gasto.fecha.desc(), Gasto.id.desc())).all()
@@ -637,7 +836,7 @@ def _load_expense_rows() -> list[dict[str, Any]]:
         {
             "id": gasto.id or 0,
             "codigo": gasto.codigo,
-            "fecha": gasto.fecha.isoformat(),
+            "fecha": _date_text(gasto.fecha),
             "lugar": gasto.lugar_texto,
             "monto_total": gasto.monto_total,
         }
@@ -645,10 +844,11 @@ def _load_expense_rows() -> list[dict[str, Any]]:
     ]
 
 
-def _load_catalog_rows() -> tuple[list[Categoria], list[dict[str, Any]]]:
+def _load_catalog_rows() -> tuple[list[Categoria], list[dict[str, Any]], list[Producto]]:
     with Session(engine) as session:
         categories = session.exec(select(Categoria).order_by(Categoria.orden, Categoria.nombre)).all()
-        products = {product.id: product for product in session.exec(select(Producto)).all()}
+        product_list = session.exec(select(Producto).order_by(Producto.nombre)).all()
+        products = {product.id: product for product in product_list}
         category_by_id = {category.id: category for category in categories}
         relations = session.exec(
             select(ProductoCategoria).order_by(ProductoCategoria.categoria_id, ProductoCategoria.orden)
@@ -672,7 +872,7 @@ def _load_catalog_rows() -> tuple[list[Categoria], list[dict[str, Any]]]:
                 "activo": relation.activo,
             }
         )
-    return categories, rows
+    return categories, rows, product_list
 
 
 def _load_promotion_rows() -> tuple[list[Promocion], list[dict[str, Any]], list[Producto]]:
@@ -705,9 +905,13 @@ def _load_promotion_rows() -> tuple[list[Promocion], list[dict[str, Any]], list[
 def _load_admin_records(table_name: str) -> list[dict[str, Any]]:
     try:
         with Session(engine) as session:
-            return AdminCrudService(session).list_records(table_name, _current_user())
+            records = AdminCrudService(session).list_records(table_name, _current_user())
+        return [
+            {key: _format_display_value(value) for key, value in record.items()}
+            for record in records
+        ]
     except Exception as exc:
-        st.error(str(exc))
+        _render_action_error("No se pudieron cargar los registros.", exc)
         return []
 
 
@@ -729,6 +933,7 @@ def _save_promotion(
         st.error("Selecciona al menos un producto elegible.")
         return
     with Session(engine) as session:
+        existing_links: list[PromocionProducto] = []
         if promo_id is None:
             promo = Promocion(
                 codigo=codigo.strip().upper(),
@@ -755,12 +960,30 @@ def _save_promotion(
             session.add(promo)
             session.flush()
             existing_links = session.exec(select(PromocionProducto).where(PromocionProducto.promocion_id == promo.id)).all()
-            for link in existing_links:
-                session.delete(link)
-        for product_id in dict.fromkeys(product_ids):
-            session.add(PromocionProducto(promocion_id=promo.id or 0, producto_id=product_id))
+        _sync_promotion_products(session, promo.id or 0, product_ids, existing_links=existing_links)
         session.commit()
     st.success("Promo guardada.")
+
+
+def _sync_promotion_products(
+    session: Session,
+    promotion_id: int,
+    product_ids: list[int],
+    *,
+    existing_links: list[PromocionProducto] | None = None,
+) -> None:
+    links = existing_links
+    if links is None:
+        links = session.exec(
+            select(PromocionProducto).where(PromocionProducto.promocion_id == promotion_id)
+        ).all()
+    selected_product_ids = set(product_ids)
+    existing_by_product = {link.producto_id: link for link in links}
+    for product_id, link in existing_by_product.items():
+        if product_id not in selected_product_ids:
+            session.delete(link)
+    for product_id in selected_product_ids - set(existing_by_product):
+        session.add(PromocionProducto(promocion_id=promotion_id, producto_id=product_id))
 
 
 def _read_app_config(key: str) -> str:
@@ -792,16 +1015,16 @@ def _save_uploaded_file(uploaded_file: Any, folder: str) -> str:
     )
 
 
-def _show_order_detail(order_id: int) -> None:
+def _show_order_detail(order: dict[str, Any]) -> None:
     if hasattr(st, "dialog"):
         @st.dialog("Detalle del pedido")
         def dialog() -> None:
-            _render_order_detail(order_id)
+            _render_order_detail(order)
 
         dialog()
     else:
         with st.expander("Detalle del pedido", expanded=True):
-            _render_order_detail(order_id)
+            _render_order_detail(order)
 
 
 def _show_expense_detail(expense_id: int) -> None:
@@ -816,43 +1039,19 @@ def _show_expense_detail(expense_id: int) -> None:
             _render_expense_detail(expense_id)
 
 
-def _render_order_detail(order_id: int) -> None:
-    with Session(engine) as session:
-        pedido = session.get(Pedido, order_id)
-        if pedido is None:
-            st.error("Pedido inexistente.")
-            return
-        cliente = session.get(Cliente, pedido.cliente_id)
-        zona = session.get(ZonaEnvio, pedido.zona_envio_id) if pedido.zona_envio_id else None
-        items = session.exec(select(PedidoItem).where(PedidoItem.pedido_id == order_id)).all()
-        products = {product.id: product for product in session.exec(select(Producto)).all()}
-        categories = {category.id: category for category in session.exec(select(Categoria)).all()}
-
-    st.subheader(pedido.codigo)
-    st.write(f"Cliente: {cliente.nombre_apellido if cliente else ''}")
-    st.write(f"Telefono: {cliente.telefono if cliente else ''}")
-    st.write(f"Entrega: {pedido.fecha_entrega.isoformat()}")
-    st.write(f"Direccion: {pedido.direccion_delivery}")
-    st.write(f"Zona: {zona.nombre if zona else 'Sin envio'}")
-    st.write(f"Estado: {pedido.estado.value}")
-    detail_rows = []
-    for item in items:
-        product = products.get(item.producto_id)
-        combo = products.get(item.producto_combo_id) if item.producto_combo_id else None
-        category = categories.get(item.categoria_venta_id)
-        detail_rows.append(
-            {
-                "producto": product.nombre if product else str(item.producto_id),
-                "combo": combo.nombre if combo else "",
-                "categoria": category.nombre if category else "",
-                "cantidad": item.cantidad,
-                "precio_unitario": _money_text(item.precio_unitario),
-                "subtotal": _money_text(item.subtotal),
-            }
-        )
-    st.dataframe(detail_rows, hide_index=True, use_container_width=True)
-    st.write(f"Envio: {_money_text(pedido.costo_envio)}")
-    st.write(f"Total: {_money_text(pedido.monto_total)}")
+def _render_order_detail(order: dict[str, Any]) -> None:
+    st.subheader(order["codigo"])
+    st.write(f"Cliente: {order['cliente']}")
+    st.write(f"Telefono: {order['telefono']}")
+    st.write(f"Entrega: {order['fecha_entrega']} a las {order['horario_entrega']}")
+    st.write(f"Direccion: {order['direccion']}")
+    st.write(f"Zona: {order['zona']}")
+    st.markdown(f"Estado: {_state_badge(order['estado'])}", unsafe_allow_html=True)
+    st.dataframe(order["items"], hide_index=True, use_container_width=True)
+    if order["observaciones"]:
+        st.write(f"Observaciones: {order['observaciones']}")
+    st.write(f"Envio: {_money_text(order['costo_envio'])}")
+    st.write(f"Total: {_money_text(order['monto_total'])}")
 
 
 def _render_expense_detail(expense_id: int) -> None:
@@ -866,7 +1065,7 @@ def _render_expense_detail(expense_id: int) -> None:
         marcas = {marca.id: marca for marca in session.exec(select(Marca)).all()}
 
     st.subheader(gasto.codigo)
-    st.write(f"Fecha: {gasto.fecha.isoformat()}")
+    st.write(f"Fecha: {_date_text(gasto.fecha)}")
     st.write(f"Lugar: {gasto.lugar_texto}")
     rows = [
         {
@@ -888,9 +1087,10 @@ def _transition_order(order_id: int, next_state: EstadoPedido) -> None:
     try:
         with Session(engine) as session:
             OrderService(session).transition_order(order_id, next_state, _current_user())
+        _load_order_rows.clear()
         st.success("Estado actualizado.")
     except DomainError as exc:
-        st.error(str(exc))
+        _render_action_error("No se pudo actualizar el estado del pedido.", exc)
 
 
 def _current_user() -> UsuarioRead:
@@ -908,6 +1108,10 @@ def _is_authenticated() -> bool:
     return int(st.session_state.get("user_id") or 0) > 0
 
 
+def _is_admin() -> bool:
+    return _is_authenticated() and st.session_state.get("role") == RolUsuario.ADMIN.value
+
+
 def _logout() -> None:
     st.session_state.user_id = 0
     st.session_state.username = ""
@@ -918,3 +1122,97 @@ def _logout() -> None:
 def _money_text(value: Decimal | str | int | float) -> str:
     amount = Decimal(str(value)).quantize(Decimal("0.01"))
     return f"$ {amount:.2f}".replace(".", ",")
+
+
+def _date_text(value: date) -> str:
+    return value.strftime("%d-%m-%Y")
+
+
+def _format_display_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.strftime("%d-%m-%Y %H:%M")
+    if isinstance(value, date):
+        return _date_text(value)
+    if isinstance(value, time):
+        return value.strftime("%H:%M")
+    return value
+
+
+def _render_action_error(message: str, exc: Exception) -> None:
+    st.error(_friendly_internal_error(message, exc))
+    with st.expander("Ver detalles tecnicos", expanded=False):
+        st.code(f"{type(exc).__name__}: {exc}", language="text")
+
+
+def _friendly_internal_error(message: str, exc: Exception) -> str:
+    if isinstance(exc, DomainError):
+        return str(exc)
+    if isinstance(exc, ValueError):
+        return str(exc) or message
+    if isinstance(exc, IntegrityError):
+        detail = str(exc).lower()
+        if "promocion_producto" in detail:
+            return "Uno de los productos ya esta asociado a esta promocion. Actualiza la pagina e intenta nuevamente."
+        if "producto_categoria" in detail:
+            return "Ese producto ya pertenece a la categoria seleccionada."
+        if "duplicate key" in detail or "unique" in detail:
+            return "Ya existe un registro con esos datos. Revisa el codigo o la seleccion realizada."
+    lowered = str(exc).lower()
+    if "could not connect" in lowered or "connection" in lowered or "timeout" in lowered:
+        return "No se pudo conectar con la base de datos. Espera unos segundos e intenta nuevamente."
+    return message
+
+
+def _build_production_summary(orders: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    excluded_states = {EstadoPedido.ENTREGADO.value, EstadoPedido.CANCELADO.value}
+    summary: dict[str, dict[str, Any]] = {}
+    for order in orders:
+        if order["estado"] in excluded_states:
+            continue
+        delivery_date = order["fecha_entrega"]
+        date_summary = summary.setdefault(delivery_date, {"order_ids": set(), "categories": {}})
+        date_summary["order_ids"].add(order["id"])
+        for item in order["items"]:
+            category_products = date_summary["categories"].setdefault(item["categoria"], {})
+            product_label = (
+                f"Mitad {item['producto']} / mitad {item['combo']}"
+                if item["combo"]
+                else item["producto"]
+            )
+            category_products[product_label] = category_products.get(product_label, 0) + int(item["cantidad"])
+
+    ordered: dict[str, dict[str, Any]] = {}
+    for delivery_date in sorted(summary, key=lambda value: datetime.strptime(value, "%d-%m-%Y")):
+        data = summary[delivery_date]
+        ordered[delivery_date] = {
+            "order_count": len(data["order_ids"]),
+            "categories": {
+                category: dict(sorted(products.items()))
+                for category, products in sorted(data["categories"].items())
+            },
+        }
+    return ordered
+
+
+def _transition_label(state: EstadoPedido) -> str:
+    return {
+        EstadoPedido.PEDIDO: "🟡 Marcar pedido",
+        EstadoPedido.PENDIENTE_CONFIRMACION: "🟡 Pendiente de confirmacion",
+        EstadoPedido.EN_PROCESO: "🟠 Pasar a preparacion",
+        EstadoPedido.ENTREGADO: "🟢 Marcar entregado",
+        EstadoPedido.CANCELADO: "🔴 Cancelar pedido",
+    }[state]
+
+
+def _state_badge(state: str) -> str:
+    label, background, color = {
+        EstadoPedido.PEDIDO.value: ("Pedido", "#fff3bf", "#674d00"),
+        EstadoPedido.PENDIENTE_CONFIRMACION.value: ("Pendiente de confirmacion", "#fff3bf", "#674d00"),
+        EstadoPedido.EN_PROCESO.value: ("En preparacion", "#ffe8cc", "#8a3b00"),
+        EstadoPedido.ENTREGADO.value: ("Entregado", "#d3f9d8", "#14532d"),
+        EstadoPedido.CANCELADO.value: ("Cancelado", "#ffe3e3", "#991b1b"),
+    }.get(state, (state, "#eeeeee", "#333333"))
+    return (
+        f'<span style="display:inline-block;padding:.2rem .55rem;border-radius:999px;'
+        f'background:{background};color:{color};font-weight:700">{label}</span>'
+    )

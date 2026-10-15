@@ -38,6 +38,7 @@ class ExpenseDetailInput:
     unidad_medida: str
     precio_unitario: Decimal
     descripcion: str | None = None
+    subtotal: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -159,8 +160,12 @@ class ExpenseService:
             raise ValidationError("La unidad de medida es obligatoria.")
         if item.precio_unitario < 0:
             raise ValidationError("El precio del gasto no puede ser negativo.")
+        if item.subtotal is not None and item.subtotal < 0:
+            raise ValidationError("El total del item no puede ser negativo.")
 
     def _line_subtotal(self, item: ExpenseDetailInput) -> Decimal:
+        if item.subtotal is not None:
+            return self._money(item.subtotal)
         return self._money(self._quantity(item.cantidad) * self._money(item.precio_unitario))
 
     @staticmethod

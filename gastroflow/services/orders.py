@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, time
 from decimal import Decimal
 from urllib.parse import quote
 from sqlalchemy import text
@@ -50,6 +50,7 @@ class PublicOrderInput:
     direccion_delivery: str
     forma_pago: FormaPago
     items: list[OrderItemInput]
+    horario_entrega: time | None = None
     zona_envio_id: int | None = None
     direccion_lat: Decimal | None = None
     direccion_lng: Decimal | None = None
@@ -114,6 +115,7 @@ class OrderService:
             submission_token=data.submission_token,
             codigo=codigo,
             fecha_entrega=data.fecha_entrega,
+            horario_entrega=data.horario_entrega,
             cliente_id=cliente.id or 0,
             direccion_delivery=data.direccion_delivery.strip(),
             direccion_lat=data.direccion_lat,
@@ -480,7 +482,8 @@ class OrderService:
             f"Pedido {pedido.codigo} requiere confirmacion",
             f"Cliente: {data.nombre_apellido}",
             f"Telefono: {normalize_phone(data.telefono)}",
-            f"Entrega: {data.fecha_entrega.isoformat()}",
+            f"Entrega: {data.fecha_entrega.strftime('%d-%m-%Y')}",
+            f"Horario: {data.horario_entrega.strftime('%H:%M') if data.horario_entrega else 'Sin especificar'}",
             f"Total: {pedido.monto_total}",
         ]
         for priced_item in priced_items:
@@ -501,6 +504,7 @@ class OrderService:
             id=pedido.id or 0,
             codigo=pedido.codigo,
             fecha_entrega=pedido.fecha_entrega,
+            horario_entrega=pedido.horario_entrega,
             cliente_id=pedido.cliente_id,
             direccion_delivery=pedido.direccion_delivery,
             direccion_lat=pedido.direccion_lat,

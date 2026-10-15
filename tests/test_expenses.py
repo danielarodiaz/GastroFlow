@@ -52,3 +52,17 @@ def test_expense_line_subtotal_uses_quantity_and_unit_price() -> None:
     )
 
     assert service._line_subtotal(item) == Decimal("25.00")
+
+
+def test_expense_line_preserves_entered_total() -> None:
+    service = ExpenseService(session=None)  # type: ignore[arg-type]
+    item = ExpenseDetailInput(
+        motivo_nombre="Harina",
+        marca_nombre="Marca",
+        cantidad=Decimal("3"),
+        unidad_medida="kg",
+        precio_unitario=Decimal("3.33"),
+        subtotal=Decimal("10.00"),
+    )
+
+    assert service._line_subtotal(item) == Decimal("10.00")
