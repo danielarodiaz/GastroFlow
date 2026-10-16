@@ -48,6 +48,10 @@ El ping mantiene despierta la app, pero no reemplaza monitoreo real ni pruebas m
 
 ## Verificacion manual
 
+La versión con pedidos especiales requiere la migración `0010_special_orders`
+y publicar también la gestión interna para aceptar o rechazar disponibilidad.
+Ver [Pedidos especiales](special-orders.md).
+
 Para la versión con promos por categoría, ejecutar las migraciones hasta
 `0009_promotion_categories` y publicar también la gestión interna. Revisar las
 promos sin categoría asignada antes de habilitarlas. Ver

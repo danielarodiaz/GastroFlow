@@ -5,6 +5,7 @@ import mimetypes
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from typing import Any
+from urllib.parse import quote
 
 import streamlit as st
 from sqlalchemy import func
@@ -139,7 +140,7 @@ def _render_orders() -> None:
     total_amount = sum((row["monto_total"] for row in orders), Decimal("0.00"))
     metric_cols[0].metric("Pedidos", len(orders))
     metric_cols[1].metric("Total", _money_text(total_amount))
-    metric_cols[2].metric("Pendientes", sum(1 for row in orders if row["estado"] == EstadoPedido.PEDIDO.value))
+    metric_cols[2].metric("Pendientes", sum(1 for row in orders if row["estado"] in {EstadoPedido.PEDIDO.value, EstadoPedido.PENDIENTE_CONFIRMACION.value}))
     metric_cols[3].metric(
         "En proceso",
         sum(1 for row in orders if row["estado"] == EstadoPedido.EN_PROCESO.value),
@@ -159,16 +160,21 @@ def _render_orders() -> None:
             cols[2].write(f"{row['fecha_entrega']} · {row['horario_entrega']}")
             cols[3].markdown(_state_badge(row["estado"]), unsafe_allow_html=True)
             cols[4].write(_money_text(row["monto_total"]))
+            special_pending = row.get("es_especial", False) and row["estado"] == EstadoPedido.PENDIENTE_CONFIRMACION.value
+            if row.get("es_especial", False):
+                st.info("Pedido especial — Pendiente de aceptación de disponibilidad" if special_pending else "Pedido especial")
             if cols[5].button("Ver detalles", key=f"order_detail_{row['id']}", use_container_width=True):
                 st.session_state.selected_order_id = row["id"]
                 _show_order_detail(row)
 
             next_states = valid_next_states(EstadoPedido(row["estado"]))
+            if special_pending:
+                next_states = {EstadoPedido.PEDIDO, EstadoPedido.CANCELADO}
             if next_states:
                 action_cols = st.columns(len(next_states))
                 for index, next_state in enumerate(sorted(next_states, key=lambda item: item.value)):
                     if action_cols[index].button(
-                        _transition_label(next_state),
+                        ("Aceptar disponibilidad" if next_state == EstadoPedido.PEDIDO else "Rechazar solicitud") if special_pending else _transition_label(next_state),
                         key=f"order_{row['id']}_{next_state.value}",
                         type="primary" if next_state != EstadoPedido.CANCELADO else "secondary",
                         use_container_width=True,
@@ -181,7 +187,7 @@ def _render_orders() -> None:
 def _render_production_summary(orders: list[dict[str, Any]]) -> None:
     summary = _build_production_summary(orders)
     st.subheader("Produccion pendiente por fecha de entrega")
-    st.caption("Incluye pedidos pendientes y en proceso. No cuenta pedidos entregados ni cancelados.")
+    st.caption("Incluye pedidos aceptados y en proceso. No cuenta solicitudes pendientes de aceptación, pedidos entregados ni cancelados.")
     if not summary:
         st.info("No hay productos pendientes de preparacion.")
         return
@@ -524,6 +530,8 @@ def _render_product_category_editor(product_rows: list[dict[str, Any]]) -> None:
         visible = st.checkbox("Visible", value=bool(selected["visible"]))
         destacado = st.checkbox("Destacado", value=bool(selected["destacado"]))
         activo = st.checkbox("Activo", value=bool(selected["activo"]))
+        special = st.checkbox("Permitir pedido especial (por encargo)", value=bool(selected["permite_pedido_especial"]))
+        st.caption("Por encargo se muestra únicamente en Consultar pedido especial. Requiere aceptar disponibilidad y conserva el precio de esta categoría.")
         submitted = st.form_submit_button("Guardar producto", use_container_width=True)
     if submitted:
         try:
@@ -534,7 +542,8 @@ def _render_product_category_editor(product_rows: list[dict[str, Any]]) -> None:
                 relation.precio = Decimal(str(precio)).quantize(Decimal("0.01"))
                 relation.descripcion_publica = " ".join(descripcion.strip().split()) or None
                 relation.orden = int(orden)
-                relation.visible = visible
+                relation.visible = visible and not special
+                relation.permite_pedido_especial = special
                 relation.destacado = destacado
                 relation.activo = activo
                 session.add(relation)
@@ -582,7 +591,9 @@ def _render_promotion_editor(promos: list[Promocion], products: list[Producto]) 
         categories = session.exec(select(Categoria).where(
             Categoria.activa == True, Categoria.es_automatica == False, Categoria.codigo != "EVENTOS",
         ).order_by(Categoria.orden, Categoria.nombre)).all()
-        relations = session.exec(select(ProductoCategoria).where(ProductoCategoria.activo == True)).all()
+        relations = session.exec(select(ProductoCategoria).where(
+            ProductoCategoria.activo == True, ProductoCategoria.permite_pedido_especial == False,
+        )).all()
         links = session.exec(select(PromocionProducto).where(PromocionProducto.promocion_id == selected.id)).all() if selected else []
         scopes = session.exec(select(PromocionCategoria).where(PromocionCategoria.promocion_id == selected.id)).all() if selected else []
         components = session.exec(select(PromocionItem).where(PromocionItem.promocion_id == selected.id)).all() if selected else []
@@ -828,11 +839,13 @@ def _load_order_rows() -> list[dict[str, Any]]:
             "monto_total": pedido.monto_total,
             "observaciones": pedido.observaciones or "",
             "items": [],
+            "es_especial": False,
         }
     for item, product, combo, category in detail_rows:
         order = rows_by_id.get(item.pedido_id)
         if order is None:
             continue
+        order["es_especial"] = order["es_especial"] or item.es_especial
         order["items"].append(
             {
                 "producto": product.nombre,
@@ -841,6 +854,7 @@ def _load_order_rows() -> list[dict[str, Any]]:
                 "cantidad": item.cantidad,
                 "precio_unitario": _money_text(item.precio_unitario),
                 "subtotal": _money_text(item.subtotal),
+                "pedido_especial": item.es_especial,
             }
         )
 
@@ -903,6 +917,7 @@ def _load_catalog_rows() -> tuple[list[Categoria], list[dict[str, Any]], list[Pr
                 "foto_url": relation.foto_url or "",
                 "orden": relation.orden,
                 "visible": relation.visible,
+                "permite_pedido_especial": relation.permite_pedido_especial,
                 "destacado": relation.destacado,
                 "activo": relation.activo,
             }
@@ -1104,6 +1119,11 @@ def _render_order_detail(order: dict[str, Any]) -> None:
     st.write(f"Direccion: {order['direccion']}")
     st.write(f"Zona: {order['zona']}")
     st.markdown(f"Estado: {_state_badge(order['estado'])}", unsafe_allow_html=True)
+    if order.get("es_especial", False):
+        st.info("Pedido especial. El precio registrado es definitivo; solo se debe aceptar la disponibilidad.")
+        st.caption("Si hace falta proponer un cambio, acordalo con el cliente antes de confirmar. No se cambian productos ni precios automáticamente.")
+        message = quote(f"Hola {order['cliente']}, te contactamos por la disponibilidad de tu pedido especial {order['codigo']}.")
+        st.link_button("Coordinar con el cliente por WhatsApp", f"https://wa.me/549{order['telefono']}?text={message}")
     st.dataframe(order["items"], hide_index=True, use_container_width=True)
     if order["observaciones"]:
         st.write(f"Observaciones: {order['observaciones']}")
@@ -1221,7 +1241,7 @@ def _friendly_internal_error(message: str, exc: Exception) -> str:
 
 
 def _build_production_summary(orders: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    excluded_states = {EstadoPedido.ENTREGADO.value, EstadoPedido.CANCELADO.value}
+    excluded_states = {EstadoPedido.ENTREGADO.value, EstadoPedido.CANCELADO.value, EstadoPedido.PENDIENTE_CONFIRMACION.value}
     summary: dict[str, dict[str, Any]] = {}
     for order in orders:
         if order["estado"] in excluded_states:

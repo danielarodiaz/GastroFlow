@@ -8,6 +8,7 @@ VALID_ORDER_TRANSITIONS: dict[EstadoPedido, set[EstadoPedido]] = {
         EstadoPedido.PENDIENTE_CONFIRMACION,
     },
     EstadoPedido.PENDIENTE_CONFIRMACION: {
+        EstadoPedido.PEDIDO,
         EstadoPedido.EN_PROCESO,
         EstadoPedido.CANCELADO,
     },

@@ -253,6 +253,7 @@ def product_card(product: rx.Var[dict]) -> rx.Component:
             product_image(product),
             rx.vstack(
                 rx.text(product["categoria"], color=RED, font_weight="900", font_size="0.76rem"),
+                rx.cond(product.get("es_especial", False), rx.text("Pedido especial · Sujeto a disponibilidad", color=RED, font_weight="900", font_size="0.8rem"), rx.fragment()),
                 rx.text(product["nombre"], font_family=FONT_STACK, font_size="1.18rem", font_weight="900", color=GREEN),
                 rx.hstack(
                     rx.text("$", product["precio"], font_weight="900", color=INK),
@@ -298,7 +299,18 @@ def products_view() -> rx.Component:
             pill_button("Ver mi pedido", on_click=PublicOrderState.show_cart, background=RED),
             width="100%",
         ),
-        rx.heading("Productos disponibles", size="7", font_family=FONT_STACK, color=GREEN),
+        rx.heading(rx.cond(PublicOrderState.special_catalog, "Pedido especial", "Productos disponibles"), size="7", font_family=FONT_STACK, color=GREEN),
+        rx.cond(
+            PublicOrderState.special_catalog,
+            rx.vstack(
+                rx.text("Se prepara únicamente por encargo y está sujeto a aceptación de disponibilidad del local. El precio mostrado es definitivo.", color=RED, font_weight="700"),
+                outline_button("Volver al catálogo habitual", on_click=PublicOrderState.show_category(PublicOrderState.selected_category_id)),
+                align="stretch", width="100%",
+            ),
+            rx.cond(PublicOrderState.has_special_catalog,
+                outline_button("Consultar pedido especial", on_click=PublicOrderState.show_special_category(PublicOrderState.selected_category_id)),
+                rx.fragment()),
+        ),
         rx.grid(
             rx.foreach(PublicOrderState.visible_products, product_card),
             columns="repeat(auto-fit, minmax(min(100%, 220px), 1fr))",
@@ -317,7 +329,9 @@ def combo_option(option: rx.Var[dict]) -> rx.Component:
 def detail_view() -> rx.Component:
     return rx.vstack(
         rx.hstack(
-            outline_button("Volver", on_click=PublicOrderState.show_category(PublicOrderState.selected_category_id)),
+            rx.cond(PublicOrderState.special_catalog,
+                outline_button("Volver", on_click=PublicOrderState.show_special_category(PublicOrderState.selected_category_id)),
+                outline_button("Volver", on_click=PublicOrderState.show_category(PublicOrderState.selected_category_id))),
             rx.spacer(),
             pill_button("Ver mi pedido", on_click=PublicOrderState.show_cart, background=RED),
             width="100%",
@@ -333,6 +347,11 @@ def detail_view() -> rx.Component:
                     color=GREEN,
                 ),
                 rx.text(PublicOrderState.selected_product["descripcion"], color="#5a4b38", font_size="1.02rem"),
+                rx.cond(PublicOrderState.detail_is_special,
+                    rx.text("Pedido especial · El precio es definitivo. Sujeto a aceptación de disponibilidad del local.", color=RED, font_weight="900", role="status"),
+                    rx.fragment()),
+                rx.cond(PublicOrderState.has_special_catalog & ~PublicOrderState.special_catalog,
+                    outline_button("Consultar sabores para pedido especial", on_click=PublicOrderState.show_special_category(PublicOrderState.selected_category_id)), rx.fragment()),
                 rx.cond(
                     PublicOrderState.combo_options.length() > 0,
                     rx.vstack(
@@ -396,6 +415,7 @@ def cart_item(item: rx.Var[dict]) -> rx.Component:
         rx.vstack(
             rx.text(item["nombre"], font_weight="900", color=GREEN),
             rx.text(item["categoria_display"], color=RED, font_size="0.88rem"),
+            rx.cond(item.get("es_especial", False), rx.text("Pedido especial · Disponibilidad pendiente de aceptación", color=RED, font_weight="900", font_size="0.88rem"), rx.fragment()),
             rx.text("Cantidad: ", item["cantidad"], " | Subtotal: $", item["subtotal_display"], color="#725f45"),
             rx.cond(
                 item["promo_label"] != "",
@@ -507,7 +527,7 @@ def cart_view() -> rx.Component:
             rx.cond(
                 PublicOrderState.registered_order_code != "",
                 panel(
-                    rx.heading("Pedido registrado", size="6", color=GREEN),
+                    rx.heading(rx.cond(PublicOrderState.registered_order_is_special, "Solicitud especial registrada", "Pedido registrado"), size="6", color=GREEN),
                     rx.text(PublicOrderState.message, font_weight="900", role="status"),
                     rx.text("Pedido: ", PublicOrderState.registered_order_code),
                     rx.text("Si WhatsApp no se abrió, presioná Enviar por WhatsApp. Tu pedido ya está guardado; este botón no lo vuelve a registrar."),
@@ -522,6 +542,9 @@ def cart_view() -> rx.Component:
                 rx.form(
                     panel(
                         rx.heading("Confirmar pedido", size="6", font_family=FONT_STACK, color=GREEN),
+                        rx.cond(PublicOrderState.cart_has_special_orders,
+                            rx.text("Tu pedido incluye productos por encargo. El pedido completo queda pendiente de aceptación de disponibilidad. El precio es definitivo; esperá la aceptación antes de pagar.", color=RED, font_weight="900", role="status"),
+                            rx.fragment()),
                         field(
                             "Nombre y apellido",
                             rx.input(
@@ -646,7 +669,7 @@ def cart_view() -> rx.Component:
                         rx.cond(
                             PublicOrderState.is_submitting,
                             rx.hstack(rx.spinner(), rx.text("Registrando tu pedido..."), role="status", align="center"),
-                            pill_button("Confirmar pedido", type="submit", background=RED, width="100%", disabled=PublicOrderState.is_updating_cart | (PublicOrderState.events_minimum_message != "")),
+                            pill_button(rx.cond(PublicOrderState.cart_has_special_orders, "Enviar solicitud especial", "Confirmar pedido"), type="submit", background=RED, width="100%", disabled=PublicOrderState.is_updating_cart | (PublicOrderState.events_minimum_message != "")),
                         ),
                         rx.cond(
                             ~PublicOrderState.is_submitting,

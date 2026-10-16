@@ -157,7 +157,7 @@ def _public_catalog_rows():
             .outerjoin(ProductoCategoria, (
                 (ProductoCategoria.categoria_id == Categoria.id)
                 & (ProductoCategoria.activo == True)
-                & (ProductoCategoria.visible == True)
+                & ((ProductoCategoria.visible == True) | (ProductoCategoria.permite_pedido_especial == True))
             ))
             .outerjoin(Producto, (Producto.id == ProductoCategoria.producto_id) & (Producto.activo == True))
             .where(Categoria.visible_cliente == True, Categoria.es_automatica == False, Categoria.activa == True)
@@ -190,6 +190,8 @@ class PublicOrderState(rx.State):
     pizza_mode: str = "Un solo sabor"
     selected_combo_id: str = ""
     combo_rules: list[dict[str, Any]] = []
+    special_catalog: bool = False
+    registered_order_is_special: bool = False
     nombre_apellido: str = ""
     telefono: str = ""
     fecha_entrega: str = ""
@@ -215,6 +217,20 @@ class PublicOrderState(rx.State):
     catalog_error: str = ""
 
     @rx.var
+    def has_special_catalog(self) -> bool:
+        return any(str(product["categoria_id"]) == self.selected_category_id and product.get("es_especial", False) for product in self.products)
+
+    @rx.var
+    def cart_has_special_orders(self) -> bool:
+        return any(item.get("es_especial", False) for item in self.cart)
+
+    @rx.var
+    def detail_is_special(self) -> bool:
+        return bool(self.selected_product.get("es_especial", False)) or (
+            self.pizza_mode == "Mitad y mitad" and any(option["id_str"] == self.selected_combo_id and option["es_especial"] for option in self.combo_options)
+        )
+
+    @rx.var
     def combo_options(self) -> list[dict[str, Any]]:
         product = self.selected_product
         if not product or product.get("categoria_codigo") not in HALF_PIZZA_CONTEXTS:
@@ -224,11 +240,13 @@ class PublicOrderState(rx.State):
         for other in self.products:
             if other["id"] == product["id"] or str(other["categoria_id"]) != str(product["categoria_id"]):
                 continue
+            if other.get("es_especial", False) and not self.special_catalog:
+                continue
             rule = by_pair.get(tuple(sorted((product["id"], other["id"]))))
             if rule is None:
                 continue
             price = OrderService._combo_price(ComboRegla(**rule), Decimal(product["precio"]), Decimal(other["precio"])).quantize(MONEY_QUANT)
-            options.append({"id": other["id"], "id_str": str(other["id"]), "nombre": other["nombre"],
+            options.append({"id": other["id"], "id_str": str(other["id"]), "nombre": other["nombre"], "es_especial": other.get("es_especial", False),
                 "precio": str(price), "precio_display": _money_text(price)})
         return options
 
@@ -278,7 +296,7 @@ class PublicOrderState(rx.State):
         product_by_id = {product.id: product for product in products if product.activo}
         product_count_by_category: dict[int, int] = {}
         for product_category in product_categories:
-            if product_category.categoria_id in category_names and product_category.producto_id in product_by_id:
+            if product_category.categoria_id in category_names and product_category.producto_id in product_by_id and product_category.visible and not product_category.permite_pedido_especial:
                 product_count_by_category[product_category.categoria_id] = (
                     product_count_by_category.get(product_category.categoria_id, 0) + 1
                 )
@@ -312,11 +330,12 @@ class PublicOrderState(rx.State):
                 "foto": _normalize_upload_path(product_category.foto_url or ((product.fotos or [""])[0] if product.fotos else "")),
                 "orden": product_category.orden,
                 "destacado": product_category.destacado,
+                "es_especial": product_category.permite_pedido_especial,
             }
             for product_category in sorted(product_categories, key=lambda item: (item.orden, item.id or 0))
             if product_category.categoria_id in category_names
             and (product := product_by_id.get(product_category.producto_id)) is not None
-            and product_category.visible
+            and (product_category.visible or product_category.permite_pedido_especial)
         ]
         self.zones = [
             {
@@ -333,6 +352,7 @@ class PublicOrderState(rx.State):
         self.is_loading_catalog = False
 
     def show_categories(self) -> None:
+        self.special_catalog = False
         self.view = "categories"
         self.selected_category_id = ""
         self.visible_products = []
@@ -342,15 +362,22 @@ class PublicOrderState(rx.State):
         self.message = ""
 
     def show_category(self, category_id: int) -> None:
+        self.special_catalog = False
         self.selected_category_id = str(category_id)
         self.visible_products = [
-            product for product in self.products if str(product["categoria_id"]) == str(category_id)
+            product for product in self.products if str(product["categoria_id"]) == str(category_id) and not product.get("es_especial", False)
         ]
         self.selected_product = {}
         self.pizza_mode = "Un solo sabor"
         self.selected_combo_id = ""
         self.view = "products"
         self.message = ""
+
+    def show_special_category(self, category_id: int) -> None:
+        self.show_category(category_id)
+        self.special_catalog = True
+        self.visible_products = [product for product in self.products
+            if str(product["categoria_id"]) == str(category_id) and product.get("es_especial", False)]
 
     def open_product(self, product_id: int, category_id: int) -> None:
         # A product can have a different presentation and price in each category.
@@ -362,7 +389,7 @@ class PublicOrderState(rx.State):
             if str(item["id"]) == str(product_id)
             and str(item["categoria_id"]) == str(category_id)
         ), {})
-        if not product:
+        if not product or (product.get("es_especial", False) and not self.special_catalog):
             self.selected_product = {}
             self.view = "products"
             self.message = "Este producto no está disponible en la categoría seleccionada."
@@ -433,6 +460,7 @@ class PublicOrderState(rx.State):
                 {
                     "producto_id": product_id,
                     "producto_combo_id": combo_id,
+                    "es_especial": self.detail_is_special,
                     "nombre": name,
                     "categoria": self.selected_product["categoria"],
                     "categoria_display": self.selected_product["categoria"],
@@ -562,8 +590,13 @@ class PublicOrderState(rx.State):
             result = await asyncio.to_thread(_create_public_order, payload)
             # Mark success before generating the link: even a later error must not resave.
             self.registered_order_code = result.pedido.codigo
+            self.registered_order_is_special = getattr(result, "es_especial", self.cart_has_special_orders)
             self.whatsapp_url = self._build_whatsapp_url(result.pedido.codigo, result.pedido.monto_total)
-            self.message = "Su pedido se registró correctamente. Te enviaremos a WhatsApp para que confirmes tu pedido."
+            self.message = (
+                "Recibimos tu solicitud de pedido especial. El precio es definitivo; el local debe aceptar la disponibilidad. No realices el pago hasta recibir esa aceptación."
+                if self.registered_order_is_special else
+                "Su pedido se registró correctamente. Te enviaremos a WhatsApp para que confirmes tu pedido."
+            )
             yield
             # Same-tab navigation does not depend on popup permissions.
             yield rx.call_script(f"window.location.assign({json.dumps(self.whatsapp_url)})")
@@ -583,6 +616,7 @@ class PublicOrderState(rx.State):
                 inputs = [_cart_input(item) for item in cart]
                 priced_items = await asyncio.to_thread(_price_public_cart, inputs)
                 for cart_item, priced_item in zip(cart, priced_items):
+                    cart_item["es_especial"] = getattr(priced_item, "es_especial", cart_item.get("es_especial", False))
                     if priced_item.categoria_venta_codigo == WHOLESALE_CONTEXT_CODE:
                         cart_item["categoria_display"] = f"{cart_item['categoria']} / Mayorista"
                     base_unit = Decimal(str(cart_item["precio"]))
@@ -633,6 +667,7 @@ class PublicOrderState(rx.State):
         self.cart_total = "0.00"
         self.cart_total_display = "0,00"
         self.registered_order_code = ""
+        self.registered_order_is_special = False
         self.whatsapp_url = ""
         self.submission_token = ""
         self.message = ""
@@ -651,6 +686,7 @@ class PublicOrderState(rx.State):
         return Decimal(str(selected["costo"])) if selected else Decimal("0.00")
 
     def _build_whatsapp_url(self, pedido_codigo: str, total: Decimal) -> str:
+        special = self.registered_order_is_special or self.cart_has_special_orders
         now = datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).strftime("%d-%m-%Y - %H:%Mhs")
         delivery_label = "Delivery" if self.delivery_mode == "delivery" else "Retiro del local"
         lines = [
@@ -666,7 +702,10 @@ class PublicOrderState(rx.State):
                 "",
                 f"Forma de pago: {'Transferencia' if self.forma_pago == FormaPago.TRANSFERENCIA.value else 'Efectivo'}",
         ]
-        if self.forma_pago == FormaPago.TRANSFERENCIA.value:
+        if special:
+            lines.extend(["", "PEDIDO ESPECIAL — PENDIENTE DE ACEPTACIÓN DE DISPONIBILIDAD",
+                "El precio indicado es definitivo. No realizar el pago hasta que el local acepte la disponibilidad."])
+        if self.forma_pago == FormaPago.TRANSFERENCIA.value and not special:
             lines.extend(
                 [
                     "",
@@ -704,6 +743,8 @@ class PublicOrderState(rx.State):
                 lines.append(
                     f"{item['cantidad']}x {item['nombre']}: ${item['subtotal_display']}"
                 )
+                if item.get("es_especial", False):
+                    lines.append("Pedido especial — disponibilidad sujeta a aceptación del local")
                 if item.get("promo_label"):
                     lines.append(item["promo_label"])
         lines.extend(
@@ -713,7 +754,7 @@ class PublicOrderState(rx.State):
                 f"Costo de envio: +${self.selected_zone_cost if self.delivery_mode == 'delivery' else '0,00'}",
                 f"TOTAL: ${_money_text(total)}",
                 "",
-                "Espero tu respuesta para confirmar mi pedido",
+                "Espero la aceptación de disponibilidad de mi pedido especial" if special else "Espero tu respuesta para confirmar mi pedido",
             ]
         )
         phone = "".join(char for char in PIZZERIA_WHATSAPP_PHONE if char.isdigit())

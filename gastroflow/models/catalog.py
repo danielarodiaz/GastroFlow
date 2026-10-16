@@ -66,6 +66,7 @@ class ProductoCategoriaBase(SQLModel):
     descripcion_publica: Optional[str] = Field(default=None)
     foto_url: Optional[str] = Field(default=None, max_length=500)
     visible: bool = Field(default=True, sa_column=Column(Boolean, nullable=False))
+    permite_pedido_especial: bool = Field(default=False, sa_column=Column(Boolean, nullable=False))
     orden: int = Field(default=0)
     destacado: bool = Field(default=False, sa_column=Column(Boolean, nullable=False))
     activo: bool = Field(default=True, sa_column=Column(Boolean, nullable=False))

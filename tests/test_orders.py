@@ -66,6 +66,7 @@ def _session() -> Session:
                     descripcion_publica VARCHAR,
                     foto_url VARCHAR(500),
                     visible BOOLEAN NOT NULL,
+                    permite_pedido_especial BOOLEAN NOT NULL DEFAULT 0,
                     orden INTEGER NOT NULL,
                     destacado BOOLEAN NOT NULL,
                     activo BOOLEAN NOT NULL,

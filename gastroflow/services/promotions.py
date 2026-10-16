@@ -29,6 +29,7 @@ def configure_promotion(
         select(ProductoCategoria).join(Producto, Producto.id == ProductoCategoria.producto_id).where(
             ProductoCategoria.categoria_id.in_(categories), ProductoCategoria.producto_id.in_(products),
             ProductoCategoria.activo == True, Producto.activo == True,
+            ProductoCategoria.permite_pedido_especial == False,
         )
     ).all()}
     if {product for product, _ in available} != products or {category for _, category in available} != categories:

@@ -68,6 +68,7 @@ class PublicOrderInput:
 class CreatedOrderResult:
     pedido: PedidoRead
     whatsapp_url: str | None
+    es_especial: bool = False
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,7 @@ class PricedItem:
     categoria_venta_codigo: str = ""
     precio_base: Decimal | None = None
     promocion_nombre: str = ""
+    es_especial: bool = False
 
 
 @dataclass(frozen=True)
@@ -100,7 +102,10 @@ class OrderService:
                 self.session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:token, 0))"), {"token": data.submission_token})
             existing = self.session.exec(select(Pedido).where(Pedido.submission_token == data.submission_token)).first()
             if existing is not None:
-                return CreatedOrderResult(pedido=self._to_read(existing), whatsapp_url=None)
+                special = self.session.exec(select(PedidoItem).where(
+                    PedidoItem.pedido_id == existing.id, PedidoItem.es_especial == True,
+                )).first() is not None
+                return CreatedOrderResult(pedido=self._to_read(existing), whatsapp_url=None, es_especial=special)
         if not data.items:
             raise ValidationError("El pedido debe tener al menos un item.")
         if not data.nombre_apellido.strip():
@@ -148,13 +153,15 @@ class OrderService:
                     cantidad=priced_item.item.cantidad,
                     precio_unitario=priced_item.precio_unitario,
                     subtotal=priced_item.subtotal,
+                    es_especial=priced_item.es_especial,
                 )
             )
 
         self.session.commit()
         self.session.refresh(pedido)
         whatsapp_url = self._build_whatsapp_url(pedido, data, priced_items) if requires_confirmation else None
-        return CreatedOrderResult(pedido=self._to_read(pedido), whatsapp_url=whatsapp_url)
+        return CreatedOrderResult(pedido=self._to_read(pedido), whatsapp_url=whatsapp_url,
+            es_especial=any(item.es_especial for item in priced_items))
 
     def transition_order(
         self,
@@ -170,6 +177,11 @@ class OrderService:
             raise ValidationError("Pedido inexistente.")
 
         assert_valid_order_transition(pedido.estado, next_state)
+        if pedido.estado == EstadoPedido.PENDIENTE_CONFIRMACION and next_state == EstadoPedido.EN_PROCESO:
+            if self.session.exec(select(PedidoItem).where(
+                PedidoItem.pedido_id == pedido.id, PedidoItem.es_especial == True,
+            )).first() is not None:
+                raise ValidationError("Primero aceptá la disponibilidad del pedido especial.")
         pedido.estado = next_state
         self.session.add(pedido)
         self.session.commit()
@@ -257,6 +269,7 @@ class OrderService:
                         requiere_confirmacion=priced_item.requiere_confirmacion,
                         categoria_venta_codigo=priced_item.categoria_venta_codigo,
                         precio_base=priced_item.precio_base,
+                        es_especial=priced_item.es_especial,
                     )
             return [grouped_results[index] for index in range(len(items))]
 
@@ -266,69 +279,77 @@ class OrderService:
             items, contexto_origen, origin_category, enforce_event_minimum=enforce_event_minimum,
         )
         category_prices = self._prices_for_category(sale_category.id or 0)
+        origin_relations = {relation.producto_id: relation for relation in self.session.exec(
+            select(ProductoCategoria).where(ProductoCategoria.categoria_id == origin_category.id, ProductoCategoria.activo == True)
+        ).all()}
+        special_by_index = {}
+        for index, item in enumerate(items):
+            product_ids = {item.producto_id}
+            if item.producto_combo_id is not None:
+                product_ids.add(item.producto_combo_id)
+            for product_id in product_ids:
+                relation = origin_relations.get(product_id)
+                if relation is None or not products[product_id].activo or not (relation.visible or relation.permite_pedido_especial):
+                    raise ValidationError("El producto no está disponible en la categoría elegida.")
+            special_by_index[index] = any(origin_relations[product_id].permite_pedido_especial for product_id in product_ids)
         promotional_prices = (
             {}
             if sale_category.codigo in {EVENTS_CONTEXT_CODE, WHOLESALE_CONTEXT_CODE}
-            else self._eligible_promotions(items, category_prices, sale_category.id or 0)
+            else self._eligible_promotions([item for index, item in enumerate(items) if not special_by_index[index]], category_prices, sale_category.id or 0)
         )
 
         priced_items: list[PricedItem] = []
-        for item in items:
+        for index, item in enumerate(items):
             if item.cantidad <= 0:
                 raise ValidationError("La cantidad debe ser mayor a cero.")
             product = products[item.producto_id]
-            base_price = self._item_base_price(product.id or 0, category_prices, is_combo=False)
+            special = special_by_index[index]
+            line_category = origin_category if special else sale_category
+            line_prices = {product_id: relation.precio for product_id, relation in origin_relations.items()} if special else category_prices
+            base_price = self._item_base_price(product.id or 0, line_prices, is_combo=False)
 
-            requires_confirmation = False
+            requires_confirmation = special
             unit_price = self._money(base_price)
             subtotal = self._money(base_price * item.cantidad)
             promotion = promotional_prices.get(product.id or 0)
-            if promotion is not None and item.producto_combo_id is None:
+            if promotion is not None and item.producto_combo_id is None and not special:
                 unit_price, subtotal = self._apply_promotion_to_line(
                     base_price=base_price,
                     quantity=item.cantidad,
                     promotion=promotion,
                 )
             if item.producto_combo_id is not None:
-                self._validate_combo_origin(item, origin_category, products)
+                self._validate_combo_origin(item, origin_category)
                 combo_product = products[item.producto_combo_id]
-                combo_base_price = self._item_base_price(combo_product.id or 0, category_prices, is_combo=True)
+                combo_base_price = self._item_base_price(combo_product.id or 0, line_prices, is_combo=True)
                 combo_rule = self._get_combo_rule(product.id or 0, combo_product.id or 0)
                 unit_price = self._money(self._combo_price(combo_rule, base_price, combo_base_price))
                 subtotal = unit_price * item.cantidad
                 base_price = unit_price
-                requires_confirmation = combo_rule.requiere_confirmacion
+                requires_confirmation = special or combo_rule.requiere_confirmacion
 
             unit_price = self._money(unit_price)
             priced_items.append(
                 PricedItem(
                     item=item,
                     precio_unitario=unit_price,
-                    categoria_venta_id=sale_category.id or 0,
+                    categoria_venta_id=line_category.id or 0,
                     subtotal=self._money(subtotal),
                     requiere_confirmacion=requires_confirmation,
-                    categoria_venta_codigo=sale_category.codigo,
+                    categoria_venta_codigo=line_category.codigo,
                     precio_base=base_price,
+                    es_especial=special,
                 )
             )
         return priced_items
 
-    def _validate_combo_origin(self, item: OrderItemInput, category: Categoria, products: dict[int, Producto]) -> None:
+    @staticmethod
+    def _validate_combo_origin(item: OrderItemInput, category: Categoria) -> None:
+        # Both presentations were already checked against the origin relations.
         if category.codigo not in HALF_PIZZA_CONTEXTS:
             raise ValidationError("Mitad y mitad está disponible en Lista para hornear y Lista para comer.")
         if item.producto_id == item.producto_combo_id:
             raise ValidationError("Elegí dos sabores distintos para mitad y mitad.")
-        ids = {item.producto_id, item.producto_combo_id}
-        if any(not products[product_id].activo for product_id in ids):
-            raise ValidationError("Uno de los sabores ya no está disponible.")
-        available = self.session.exec(select(ProductoCategoria).where(
-            ProductoCategoria.categoria_id == category.id,
-            ProductoCategoria.producto_id.in_(ids),
-            ProductoCategoria.activo == True,
-            ProductoCategoria.visible == True,
-        )).all()
-        if {relation.producto_id for relation in available} != ids:
-            raise ValidationError("Ambos sabores deben estar disponibles en la misma categoría elegida.")
 
     def _resolve_sale_category(
         self,
@@ -534,11 +555,15 @@ class OrderService:
             f"Horario: {data.horario_entrega.strftime('%H:%M') if data.horario_entrega else 'Sin especificar'}",
             f"Total: {pedido.monto_total}",
         ]
+        if any(item.es_especial for item in priced_items):
+            lines.extend(["Pedido especial — pendiente de aceptación de disponibilidad.",
+                "El precio es definitivo. No realizar pagos hasta que el local acepte la disponibilidad."])
         for priced_item in priced_items:
             lines.append(
                 f"- Producto {priced_item.item.producto_id}"
                 f"{' + ' + str(priced_item.item.producto_combo_id) if priced_item.item.producto_combo_id else ''}"
                 f" x{priced_item.item.cantidad}: {priced_item.precio_unitario}"
+                f"{' (pedido especial)' if priced_item.es_especial else ''}"
             )
         return f"https://wa.me/?text={quote(chr(10).join(lines))}"
 

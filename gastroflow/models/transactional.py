@@ -101,6 +101,7 @@ class PedidoItemBase(SQLModel):
     cantidad: int = Field(gt=0)
     precio_unitario: Decimal = Field(sa_column=money_column())
     subtotal: Decimal = Field(sa_column=money_column())
+    es_especial: bool = Field(default=False)
 
 
 class PedidoItem(PedidoItemBase, IdMixin, table=True):

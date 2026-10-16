@@ -48,6 +48,7 @@ def apply_package_promotions(session: Session, priced: list["PricedItem"], conte
     for index, line in enumerate(priced):
         if (
             line.item.producto_combo_id is None
+            and not line.es_especial
             and line.categoria_venta_codigo == contexts[index]
             and contexts[index] not in {"MAYORISTA", "EVENTOS"}
         ):
