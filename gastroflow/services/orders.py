@@ -21,6 +21,8 @@ from gastroflow.models import (
     Producto,
     ProductoCategoria,
     Promocion,
+    PromocionCategoria,
+    PromocionItem,
     PromocionProducto,
     UsuarioRead,
     ZonaEnvio,
@@ -75,6 +77,8 @@ class PricedItem:
     subtotal: Decimal
     requiere_confirmacion: bool
     categoria_venta_codigo: str = ""
+    precio_base: Decimal | None = None
+    promocion_nombre: str = ""
 
 
 @dataclass(frozen=True)
@@ -206,6 +210,19 @@ class OrderService:
         *,
         enforce_event_minimum: bool = True,
     ) -> list[PricedItem]:
+        from gastroflow.services.promotion_packages import apply_package_promotions
+
+        priced = self._price_context_items(items, contexto_origen, enforce_event_minimum=enforce_event_minimum)
+        contexts = [item.contexto_origen or contexto_origen for item in items]
+        return apply_package_promotions(self.session, priced, contexts)
+
+    def _price_context_items(
+        self,
+        items: list[OrderItemInput],
+        contexto_origen: str = DEFAULT_CONTEXT_CODE,
+        *,
+        enforce_event_minimum: bool = True,
+    ) -> list[PricedItem]:
         context_by_index = [
             item.contexto_origen or contexto_origen
             for item in items
@@ -229,7 +246,7 @@ class OrderService:
                     )
                     for _, item in indexed_group
                 ]
-                priced_group = self._price_items(group_items, context, enforce_event_minimum=enforce_event_minimum)
+                priced_group = self._price_context_items(group_items, context, enforce_event_minimum=enforce_event_minimum)
                 for (index, _), priced_item in zip(indexed_group, priced_group):
                     grouped_results[index] = PricedItem(
                         item=items[index],
@@ -238,6 +255,7 @@ class OrderService:
                         subtotal=priced_item.subtotal,
                         requiere_confirmacion=priced_item.requiere_confirmacion,
                         categoria_venta_codigo=priced_item.categoria_venta_codigo,
+                        precio_base=priced_item.precio_base,
                     )
             return [grouped_results[index] for index in range(len(items))]
 
@@ -250,7 +268,7 @@ class OrderService:
         promotional_prices = (
             {}
             if sale_category.codigo in {EVENTS_CONTEXT_CODE, WHOLESALE_CONTEXT_CODE}
-            else self._eligible_promotions(items, category_prices)
+            else self._eligible_promotions(items, category_prices, sale_category.id or 0)
         )
 
         priced_items: list[PricedItem] = []
@@ -287,6 +305,7 @@ class OrderService:
                     subtotal=self._money(subtotal),
                     requiere_confirmacion=requires_confirmation,
                     categoria_venta_codigo=sale_category.codigo,
+                    precio_base=base_price,
                 )
             )
         return priced_items
@@ -376,6 +395,7 @@ class OrderService:
         self,
         items: list[OrderItemInput],
         category_prices: dict[int, Decimal],
+        category_id: int,
     ) -> dict[int, AppliedPromotion]:
         quantities_by_product = {
             item.producto_id: sum(
@@ -387,9 +407,11 @@ class OrderService:
             if item.producto_combo_id is None
         }
         promotions = self.session.exec(
-            select(Promocion).where(
+            select(Promocion).join(PromocionCategoria, PromocionCategoria.promocion_id == Promocion.id).where(
                 Promocion.activa == True,  # noqa: E712
                 Promocion.tipo == TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
+                PromocionCategoria.categoria_id == category_id,
+                ~select(PromocionItem.id).where(PromocionItem.promocion_id == Promocion.id).exists(),
             )
         ).all()
 

@@ -48,6 +48,11 @@ El ping mantiene despierta la app, pero no reemplaza monitoreo real ni pruebas m
 
 ## Verificacion manual
 
+Para la versión con promos por categoría, ejecutar las migraciones hasta
+`0009_promotion_categories` y publicar también la gestión interna. Revisar las
+promos sin categoría asignada antes de habilitarlas. Ver
+[Promos por categoría y paquetes combinados](promotion-categories.md).
+
 Probar:
 
 - `/ping` responde `ok`.

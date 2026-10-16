@@ -29,6 +29,8 @@ from gastroflow.models import (
     Producto,
     ProductoCategoria,
     Promocion,
+    PromocionCategoria,
+    PromocionItem,
     PromocionProducto,
     UsuarioRead,
     ZonaEnvio,
@@ -43,6 +45,7 @@ from gastroflow.services import (
     OrderService,
 )
 from gastroflow.services.media_storage import save_media_bytes
+from gastroflow.services.promotions import configure_promotion
 
 BRAND_LOGO_CONFIG_KEY = "brand.logo_url"
 
@@ -266,6 +269,8 @@ def _render_catalog() -> None:
 
 def _render_promotions() -> None:
     st.title("Promos")
+    if st.session_state.pop("promotion_saved", False):
+        st.success("Promo guardada.")
     promos, promo_rows, products = _load_promotion_rows()
     st.dataframe(promo_rows, hide_index=True, use_container_width=True)
     if not _is_admin():
@@ -572,52 +577,82 @@ def _render_promotion_editor(promos: list[Promocion], products: list[Producto]) 
     promo_options.update({f"{promo.id} | {promo.nombre}": promo for promo in promos})
     selected_label = st.selectbox("Promo", list(promo_options))
     selected = promo_options[selected_label]
-    product_options = {f"{product.id} | {product.nombre}": product.id for product in products}
-    selected_product_labels: list[str] = []
-    if selected is not None:
-        with Session(engine) as session:
-            links = session.exec(select(PromocionProducto).where(PromocionProducto.promocion_id == selected.id)).all()
-        linked_product_ids = {link.producto_id for link in links}
-        selected_product_labels = [
-            label for label, product_id in product_options.items() if product_id in linked_product_ids
-        ]
-
-    with st.form("promotion_editor"):
+    editor_key = str(selected.id) if selected else "new"
+    with Session(engine) as session:
+        categories = session.exec(select(Categoria).where(
+            Categoria.activa == True, Categoria.es_automatica == False, Categoria.codigo != "EVENTOS",
+        ).order_by(Categoria.orden, Categoria.nombre)).all()
+        relations = session.exec(select(ProductoCategoria).where(ProductoCategoria.activo == True)).all()
+        links = session.exec(select(PromocionProducto).where(PromocionProducto.promocion_id == selected.id)).all() if selected else []
+        scopes = session.exec(select(PromocionCategoria).where(PromocionCategoria.promocion_id == selected.id)).all() if selected else []
+        components = session.exec(select(PromocionItem).where(PromocionItem.promocion_id == selected.id)).all() if selected else []
+    if selected and not scopes:
+        st.warning("Esta promo no tiene categorías asignadas y no se aplica. Elegí sus categorías y guardala.")
+    # These controls must rerun immediately so products follow the category selection.
+    category_options = {category.id: category.nombre for category in categories}
+    chosen_categories = st.multiselect(
+        "Categorías de la promo", list(category_options),
+        default=[link.categoria_id for link in scopes if link.categoria_id in category_options],
+        format_func=category_options.get, key=f"promo_categories_{editor_key}",
+    )
+    eligible_ids = {relation.producto_id for relation in relations if relation.categoria_id in chosen_categories}
+    product_options = {product.id: product.nombre for product in products if product.id in eligible_ids and product.activo}
+    chosen_products = st.multiselect(
+        "Productos elegibles", list(product_options),
+        default=[link.producto_id for link in links if link.producto_id in product_options],
+        format_func=product_options.get, key=f"promo_products_{editor_key}_{','.join(map(str, sorted(chosen_categories)))}",
+    )
+    package_mode = st.checkbox("Paquete combinado con cantidades por producto y categoría",
+        value=bool(components), key=f"promo_package_{editor_key}")
+    package_items = []
+    if package_mode:
+        st.caption("Indicá las unidades de cada producto por paquete completo. Usá 0 para excluir una presentación.")
+        previous = {(item.producto_id, item.categoria_id): item.cantidad for item in components}
+        for relation in sorted(relations, key=lambda item: (item.categoria_id, item.producto_id)):
+            if relation.categoria_id not in chosen_categories or relation.producto_id not in chosen_products:
+                continue
+            quantity = st.number_input(
+                f"{product_options[relation.producto_id]} · {category_options[relation.categoria_id]} — unidades por paquete",
+                min_value=0, value=previous.get((relation.producto_id, relation.categoria_id), 0), step=1,
+                key=f"promo_units_{editor_key}_{relation.producto_id}_{relation.categoria_id}",
+            )
+            if quantity:
+                package_items.append((relation.producto_id, relation.categoria_id, int(quantity)))
+        st.caption(f"Unidades por paquete: {sum(quantity for _, _, quantity in package_items)}")
+    else:
+        st.caption("La promo se evalúa por separado en cada categoría seleccionada. Las unidades sobrantes mantienen el precio base.")
+    with st.form(f"promotion_editor_{editor_key}"):
         codigo = st.text_input("Codigo", value=selected.codigo if selected else "")
         nombre = st.text_input("Nombre", value=selected.nombre if selected else "")
-        cantidad_minima = st.number_input(
-            "Cantidad minima",
-            min_value=1,
-            value=int(selected.cantidad_minima) if selected else 2,
-            step=1,
+        cantidad_minima = sum(quantity for _, _, quantity in package_items) if package_mode else st.number_input(
+            "Cantidad minima", min_value=1, value=int(selected.cantidad_minima) if selected else 2, step=1,
         )
-        precio_unitario = st.number_input(
-            "Precio unitario promocional",
-            min_value=0.0,
-            value=float(selected.precio_unitario_promocional) if selected else 0.0,
-            step=100.0,
+        precio_unitario = 0 if package_mode else st.number_input(
+            "Precio unitario promocional", min_value=0.0,
+            value=float(selected.precio_unitario_promocional) if selected else 0.0, step=100.0,
         )
         precio_total_default = float(selected.precio_total_promocional) if selected and selected.precio_total_promocional else 0.0
         precio_total = st.number_input("Precio total del paquete", min_value=0.0, value=precio_total_default, step=100.0)
         activa = st.checkbox("Activa", value=bool(selected.activa) if selected else True)
-        chosen_products = st.multiselect(
-            "Productos elegibles",
-            list(product_options),
-            default=selected_product_labels,
-        )
         submitted = st.form_submit_button("Guardar promo", use_container_width=True)
     if submitted:
         try:
-            _save_promotion(
+            saved = _save_promotion(
                 promo_id=selected.id if selected else None,
                 codigo=codigo,
                 nombre=nombre,
-                cantidad_minima=int(cantidad_minima),
+                cantidad_minima=sum(quantity for _, _, quantity in package_items) if package_mode else int(cantidad_minima),
                 precio_unitario=Decimal(str(precio_unitario)).quantize(Decimal("0.01")),
                 precio_total=Decimal(str(precio_total)).quantize(Decimal("0.01")) if precio_total else None,
                 activa=activa,
-                product_ids=[product_options[label] for label in chosen_products],
+                product_ids=chosen_products,
+                category_ids=chosen_categories,
+                package_items=package_items,
+                package_mode=package_mode,
             )
+            if saved:
+                st.session_state.promotion_saved = True
+                st.rerun()
         except Exception as exc:
             _render_action_error("No se pudo guardar la promocion.", exc)
 
@@ -881,11 +916,24 @@ def _load_promotion_rows() -> tuple[list[Promocion], list[dict[str, Any]], list[
         products = session.exec(select(Producto).order_by(Producto.nombre)).all()
         product_by_id = {product.id: product for product in products}
         links = session.exec(select(PromocionProducto)).all()
+        category_by_id = {category.id: category.nombre for category in session.exec(select(Categoria)).all()}
+        scopes = session.exec(select(PromocionCategoria)).all()
+        components = session.exec(select(PromocionItem)).all()
     product_names_by_promo: dict[int, list[str]] = {}
     for link in links:
         product = product_by_id.get(link.producto_id)
         if product:
             product_names_by_promo.setdefault(link.promocion_id, []).append(product.nombre)
+    category_names_by_promo = {}
+    for scope in scopes:
+        category_names_by_promo.setdefault(scope.promocion_id, []).append(category_by_id.get(scope.categoria_id, ""))
+    composition_by_promo = {}
+    for item in components:
+        product = product_by_id.get(item.producto_id)
+        if product:
+            composition_by_promo.setdefault(item.promocion_id, []).append(
+                f"{item.cantidad} × {product.nombre} ({category_by_id.get(item.categoria_id, '')})"
+            )
     rows = [
         {
             "id": promo.id,
@@ -895,6 +943,8 @@ def _load_promotion_rows() -> tuple[list[Promocion], list[dict[str, Any]], list[
             "precio_unitario": _money_text(promo.precio_unitario_promocional),
             "precio_total": _money_text(promo.precio_total_promocional) if promo.precio_total_promocional else "",
             "activa": promo.activa,
+            "categorias": ", ".join(category_names_by_promo.get(promo.id, [])) or "Sin asignar: no se aplica",
+            "paquete": " + ".join(composition_by_promo.get(promo.id, [])),
             "productos": ", ".join(product_names_by_promo.get(promo.id or 0, [])),
         }
         for promo in promos
@@ -925,13 +975,19 @@ def _save_promotion(
     precio_total: Decimal | None,
     activa: bool,
     product_ids: list[int],
-) -> None:
+    category_ids: list[int],
+    package_items: list[tuple[int, int, int]],
+    package_mode: bool,
+) -> bool:
     if not codigo.strip() or not nombre.strip():
         st.error("Codigo y nombre son obligatorios.")
-        return
+        return False
     if not product_ids:
         st.error("Selecciona al menos un producto elegible.")
-        return
+        return False
+    if package_mode and not package_items:
+        st.error("Define las cantidades por producto del paquete combinado.")
+        return False
     with Session(engine) as session:
         existing_links: list[PromocionProducto] = []
         if promo_id is None:
@@ -950,7 +1006,7 @@ def _save_promotion(
             promo = session.get(Promocion, promo_id)
             if promo is None:
                 st.error("Promocion inexistente.")
-                return
+                return False
             promo.codigo = codigo.strip().upper()
             promo.nombre = " ".join(nombre.strip().split())
             promo.cantidad_minima = cantidad_minima
@@ -960,9 +1016,10 @@ def _save_promotion(
             session.add(promo)
             session.flush()
             existing_links = session.exec(select(PromocionProducto).where(PromocionProducto.promocion_id == promo.id)).all()
+        configure_promotion(session, promo, category_ids, product_ids, package_items if package_mode else [])
         _sync_promotion_products(session, promo.id or 0, product_ids, existing_links=existing_links)
         session.commit()
-    st.success("Promo guardada.")
+    return True
 
 
 def _sync_promotion_products(

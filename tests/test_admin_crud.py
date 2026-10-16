@@ -12,6 +12,8 @@ def test_crud_registry_contains_all_model_tables() -> None:
         "producto_categoria",
         "promocion",
         "promocion_producto",
+        "promocion_categoria",
+        "promocion_item",
         "combo_regla",
         "zona_envio",
         "motivo_gasto",

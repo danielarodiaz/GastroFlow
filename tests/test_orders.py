@@ -9,6 +9,7 @@ from gastroflow.domain.enums import EstadoPedido, ReglaPrecioCombo, TipoPromocio
 from gastroflow.domain.errors import ValidationError
 from gastroflow.domain.order_state import assert_valid_order_transition
 from gastroflow.models import Categoria, ComboRegla, Producto, ProductoCategoria, Promocion, PromocionProducto
+from gastroflow.models import PromocionCategoria, PromocionItem
 from gastroflow.services.orders import EVENTS_CONTEXT_CODE, OrderItemInput, OrderService, normalize_phone
 
 
@@ -117,6 +118,8 @@ def _session() -> Session:
                 """
             )
         )
+    PromocionCategoria.__table__.create(engine)
+    PromocionItem.__table__.create(engine)
     return Session(engine)
 
 
@@ -372,6 +375,7 @@ def test_package_promotion_keeps_exact_total() -> None:
         session.add(promo)
         session.flush()
         session.add(PromocionProducto(promocion_id=promo.id or 0, producto_id=ids["muzza"]))
+        session.add(PromocionCategoria(promocion_id=promo.id, categoria_id=ids["lista_horno"]))
         session.commit()
 
         priced_items = OrderService(session)._price_items(
@@ -411,6 +415,7 @@ def test_promotions_charge_remainder_at_base_price(quantity, minimum, base_price
         session.add(promo)
         session.flush()
         session.add(PromocionProducto(promocion_id=promo.id, producto_id=product_id))
+        session.add(PromocionCategoria(promocion_id=promo.id, categoria_id=category_id))
         session.commit()
         item = OrderService(session)._price_items([
             OrderItemInput(producto_id=product_id, cantidad=quantity, contexto_origen=context),
@@ -440,6 +445,7 @@ def test_best_promotion_is_selected_using_complete_groups_and_base_price_remaind
             session.add(promo)
             session.flush()
             session.add(PromocionProducto(promocion_id=promo.id, producto_id=ids["muzza"]))
+            session.add(PromocionCategoria(promocion_id=promo.id, categoria_id=ids["lista_horno"]))
         session.commit()
         item = OrderService(session)._price_items([OrderItemInput(producto_id=ids["muzza"], cantidad=3)])[0]
         assert item.subtotal == Decimal("18300.00")
@@ -467,6 +473,7 @@ def test_public_cart_displays_discount_only_for_complete_promotion_groups(monkey
         session.add(promo)
         session.flush()
         session.add(PromocionProducto(promocion_id=promo.id, producto_id=ids["muzza"]))
+        session.add(PromocionCategoria(promocion_id=promo.id, categoria_id=ids["lista_horno"]))
         session.commit()
         monkeypatch.setattr(public_order_state, "_price_public_cart", lambda items: OrderService(session)._price_items(items))
         state = PublicOrderState(_reflex_internal_init=True)
@@ -503,6 +510,8 @@ def test_mixed_context_items_keep_each_promotion() -> None:
             [
                 PromocionProducto(promocion_id=promo_especial.id or 0, producto_id=ids["especial"]),
                 PromocionProducto(promocion_id=promo_prepizza.id or 0, producto_id=ids["prepizza"]),
+                PromocionCategoria(promocion_id=promo_especial.id, categoria_id=ids["lista_horno"]),
+                PromocionCategoria(promocion_id=promo_prepizza.id, categoria_id=ids["lista_comer"]),
             ]
         )
         session.commit()
@@ -532,6 +541,7 @@ def test_single_non_default_context_item_keeps_its_promotion() -> None:
         session.add(promo)
         session.flush()
         session.add(PromocionProducto(promocion_id=promo.id or 0, producto_id=ids["prepizza"]))
+        session.add(PromocionCategoria(promocion_id=promo.id, categoria_id=ids["lista_comer"]))
         session.commit()
 
         priced_items = OrderService(session)._price_items(

@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 from gastroflow.data.database import engine
 from gastroflow.domain.enums import ReglaPrecioCombo, TipoPromocion, UnidadVenta
 from gastroflow.models import Categoria, ComboRegla, Producto, ProductoCategoria, Promocion, PromocionProducto, ZonaEnvio
+from gastroflow.models import PromocionCategoria
 
 SEED_PATH = Path(__file__).resolve().parents[1] / "gastroflow" / "seed" / "catalog_seed.json"
 
@@ -107,6 +108,11 @@ def main() -> None:
                     },
                     {},
                 )
+
+            for category_code in row["categorias_elegibles"]:
+                first_or_create(session, PromocionCategoria, {
+                    "promocion_id": promotion.id, "categoria_id": categories[category_code].id,
+                }, {})
 
         for row in data["delivery_zones"]:
             first_or_create(

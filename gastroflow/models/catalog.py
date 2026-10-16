@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Boolean, Column, Enum as SAEnum, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, Column, Enum as SAEnum, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -128,6 +128,29 @@ class PromocionProductoCreate(PromocionProductoBase):
 
 class PromocionProductoRead(PromocionProductoBase):
     id: int
+
+
+class PromocionCategoria(IdMixin, table=True):
+    __tablename__ = "promocion_categoria"
+    __table_args__ = (UniqueConstraint("promocion_id", "categoria_id", name="uq_promocion_categoria"),)
+
+    promocion_id: int = Field(foreign_key="promocion.id", index=True)
+    categoria_id: int = Field(foreign_key="categoria.id", index=True)
+
+
+class PromocionItem(IdMixin, table=True):
+    """Required units of one product in one category per complete package."""
+
+    __tablename__ = "promocion_item"
+    __table_args__ = (
+        UniqueConstraint("promocion_id", "producto_id", "categoria_id", name="uq_promocion_item"),
+        CheckConstraint("cantidad > 0", name="ck_promocion_item_cantidad"),
+    )
+
+    promocion_id: int = Field(foreign_key="promocion.id", index=True)
+    producto_id: int = Field(foreign_key="producto.id")
+    categoria_id: int = Field(foreign_key="categoria.id")
+    cantidad: int = Field(gt=0)
 
 
 class ComboReglaBase(SQLModel):

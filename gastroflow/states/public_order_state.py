@@ -530,7 +530,8 @@ class PublicOrderState(rx.State):
                     cart_item["discount"] = str(discount)
                     cart_item["discount_display"] = _money_text(discount)
                     cart_item["promo_label"] = (
-                        f"Promo aplicada: $-{_money_text(discount)}" if discount > 0 else ""
+                        f"{getattr(priced_item, 'promocion_nombre', '') or 'Promo aplicada'}: $-{_money_text(discount)}"
+                        if discount > 0 else ""
                     )
             except Exception as exc:
                 if isinstance(exc, ValueError):

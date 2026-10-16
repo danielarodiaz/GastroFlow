@@ -139,6 +139,7 @@
   "promotions": [
     {
       "codigo": "PROMO_MUZZA_HORNO_2",
+      "categorias_elegibles": ["LISTA_HORNO"],
       "nombre": "Muzzarella x2",
       "tipo": "PRECIO_UNITARIO_POR_CANTIDAD",
       "cantidad_minima": 2,
@@ -150,6 +151,7 @@
     },
     {
       "codigo": "PROMO_ESPECIAL_CALABRESA_HORNO_2",
+      "categorias_elegibles": ["LISTA_HORNO"],
       "nombre": "Especial y Calabresa x2",
       "tipo": "PRECIO_UNITARIO_POR_CANTIDAD",
       "cantidad_minima": 2,
