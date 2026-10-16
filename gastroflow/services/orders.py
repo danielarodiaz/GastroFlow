@@ -30,6 +30,8 @@ from gastroflow.services.codes import next_business_code
 MONEY_QUANT = Decimal("0.01")
 DEFAULT_CONTEXT_CODE = "LISTA_HORNO"
 EVENTS_CONTEXT_CODE = "EVENTOS"
+EVENTS_MINIMUM_UNITS = 10
+EVENTS_MINIMUM_MESSAGE = "La cantidad minima de compra para Eventos debe ser de 10 unidades"
 WHOLESALE_CONTEXT_CODE = "MAYORISTA"
 WHOLESALE_ELIGIBLE_CONTEXTS = frozenset({DEFAULT_CONTEXT_CODE})
 
@@ -72,6 +74,7 @@ class PricedItem:
     categoria_venta_id: int
     subtotal: Decimal
     requiere_confirmacion: bool
+    categoria_venta_codigo: str = ""
 
 
 @dataclass(frozen=True)
@@ -200,6 +203,8 @@ class OrderService:
         self,
         items: list[OrderItemInput],
         contexto_origen: str = DEFAULT_CONTEXT_CODE,
+        *,
+        enforce_event_minimum: bool = True,
     ) -> list[PricedItem]:
         context_by_index = [
             item.contexto_origen or contexto_origen
@@ -224,7 +229,7 @@ class OrderService:
                     )
                     for _, item in indexed_group
                 ]
-                priced_group = self._price_items(group_items, context)
+                priced_group = self._price_items(group_items, context, enforce_event_minimum=enforce_event_minimum)
                 for (index, _), priced_item in zip(indexed_group, priced_group):
                     grouped_results[index] = PricedItem(
                         item=items[index],
@@ -232,12 +237,15 @@ class OrderService:
                         categoria_venta_id=priced_item.categoria_venta_id,
                         subtotal=priced_item.subtotal,
                         requiere_confirmacion=priced_item.requiere_confirmacion,
+                        categoria_venta_codigo=priced_item.categoria_venta_codigo,
                     )
             return [grouped_results[index] for index in range(len(items))]
 
         products = self._load_products(items)
         origin_category = self._get_category_by_code(contexto_origen)
-        sale_category = self._resolve_sale_category(items, contexto_origen, origin_category)
+        sale_category = self._resolve_sale_category(
+            items, contexto_origen, origin_category, enforce_event_minimum=enforce_event_minimum,
+        )
         category_prices = self._prices_for_category(sale_category.id or 0)
         promotional_prices = (
             {}
@@ -278,6 +286,7 @@ class OrderService:
                     categoria_venta_id=sale_category.id or 0,
                     subtotal=self._money(subtotal),
                     requiere_confirmacion=requires_confirmation,
+                    categoria_venta_codigo=sale_category.codigo,
                 )
             )
         return priced_items
@@ -287,6 +296,8 @@ class OrderService:
         items: list[OrderItemInput],
         contexto_origen: str,
         origin_category: Categoria,
+        *,
+        enforce_event_minimum: bool = True,
     ) -> Categoria:
         if not origin_category.activa:
             raise ValidationError("El contexto de venta no esta activo.")
@@ -294,11 +305,8 @@ class OrderService:
             raise ValidationError("El contexto automatico no puede seleccionarse manualmente.")
 
         if contexto_origen == EVENTS_CONTEXT_CODE:
-            minimum = origin_category.cantidad_minima_total or 0
-            if self._total_order_units(items) < minimum:
-                raise ValidationError(
-                    f"El contexto EVENTOS requiere un minimo de {minimum} unidades."
-                )
+            if enforce_event_minimum and self._total_order_units(items) < EVENTS_MINIMUM_UNITS:
+                raise ValidationError(EVENTS_MINIMUM_MESSAGE)
             return origin_category
 
         if contexto_origen in WHOLESALE_ELIGIBLE_CONTEXTS:

@@ -186,3 +186,49 @@ def test_confirmation_rejects_invalid_phone_before_saving(monkeypatch):
     asyncio.run(run())
     assert not calls
     assert "10 dígitos" in state.message
+
+
+@pytest.mark.parametrize("event_units", [0, 1, 9, 10, 11])
+def test_confirmation_enforces_events_minimum_independently_of_other_categories(monkeypatch, event_units):
+    calls = []
+
+    def create(payload):
+        calls.append(payload)
+        return SimpleNamespace(pedido=SimpleNamespace(codigo="PED-EVENTOS", monto_total=Decimal("100")))
+
+    monkeypatch.setattr(app_state, "_create_public_order", create)
+    state = _state()
+    state.cart[0]["cantidad"] = 20
+    state.cart[0]["categoria"] = "Lista para hornear"
+    state.cart[0]["nombre"] = "Muzzarella"
+    state.cart[0]["subtotal_display"] = "100,00"
+    if event_units:
+        # The threshold is across products, not per product.
+        for product_id, quantity in [(1, (event_units + 1) // 2), (2, event_units // 2)]:
+            if quantity:
+                state.cart.append({"producto_id": product_id, "cantidad": quantity,
+                    "categoria_codigo": "EVENTOS", "categoria": "Eventos", "nombre": "Pizza",
+                    "subtotal_display": "100,00"})
+
+    async def run():
+        blocked = 0 < event_units < 10
+        assert bool(state.events_minimum_message) == blocked
+        _ = [event async for event in state.submit_order({})]
+        assert not state.is_submitting
+        if blocked:
+            assert not calls
+            assert not state.registered_order_code
+            assert state.message == "La cantidad minima de compra para Eventos debe ser de 10 unidades"
+        else:
+            assert len(calls) == 1
+            assert state.registered_order_code == "PED-EVENTOS"
+
+    asyncio.run(run())
+
+
+def test_events_minimum_message_updates_after_removing_events():
+    state = _state()
+    state.cart = [{"producto_id": 1, "cantidad": 1, "categoria_codigo": "EVENTOS"}]
+    assert state.events_minimum_message
+    state.cart = []
+    assert not state.events_minimum_message

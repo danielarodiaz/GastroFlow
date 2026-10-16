@@ -240,6 +240,7 @@ def test_standard_order_with_10_units_uses_automatic_wholesale_price() -> None:
         )
 
         assert priced_items[0].categoria_venta_id == ids["mayorista"]
+        assert priced_items[0].categoria_venta_codigo == "MAYORISTA"
         assert priced_items[0].precio_unitario == Decimal("4500.00")
         assert priced_items[0].subtotal == Decimal("45000.00")
 
@@ -261,11 +262,82 @@ def test_events_order_below_minimum_is_rejected() -> None:
     with _session() as session:
         ids = _catalog(session)
 
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError, match="La cantidad minima de compra para Eventos debe ser de 10 unidades"):
             OrderService(session)._price_items(
                 [OrderItemInput(producto_id=ids["muzza"], cantidad=9)],
                 contexto_origen=EVENTS_CONTEXT_CODE,
             )
+
+
+@pytest.mark.parametrize("event_units", [1, 9, 10, 11])
+def test_events_minimum_counts_only_events_and_preview_remains_available(event_units):
+    with _session() as session:
+        ids = _catalog(session)
+        events = session.get(Categoria, ids["eventos"])
+        events.cantidad_minima_total = None  # The business minimum also applies without configuration.
+        session.commit()
+        items = [
+            OrderItemInput(producto_id=ids["muzza"], cantidad=event_units - 1 or 1, contexto_origen="EVENTOS"),
+            OrderItemInput(producto_id=ids["especial"], cantidad=1, contexto_origen="EVENTOS"),
+            OrderItemInput(producto_id=ids["muzza"], cantidad=10, contexto_origen="LISTA_HORNO"),
+            OrderItemInput(producto_id=ids["prepizza"], cantidad=12, contexto_origen="LISTA_COMER"),
+        ]
+        if event_units == 1:
+            items.pop(1)
+        service = OrderService(session)
+        preview = service._price_items(items, enforce_event_minimum=False)
+        assert preview[0].categoria_venta_codigo == "EVENTOS"
+        assert preview[0].precio_unitario == Decimal("5200.00")
+        assert preview[-2].categoria_venta_codigo == "MAYORISTA"
+        assert preview[-1].categoria_venta_codigo == "LISTA_COMER"
+        if event_units < 10:
+            with pytest.raises(ValidationError, match="La cantidad minima de compra para Eventos debe ser de 10 unidades"):
+                service._price_items(items)
+        else:
+            assert service._price_items(items) == preview
+
+
+def test_public_cart_wholesale_label_tracks_actual_pricing_and_removal(monkeypatch):
+    import asyncio
+    from urllib.parse import unquote
+
+    from gastroflow.states import public_order_state
+    from gastroflow.states.public_order_state import PublicOrderState
+
+    with _session() as session:
+        ids = _catalog(session)
+        monkeypatch.setattr(public_order_state, "_price_public_cart", lambda items: OrderService(session)._price_items(
+            items, enforce_event_minimum=False,
+        ))
+        state = PublicOrderState(_reflex_internal_init=True)
+        state.cart = [
+            {"producto_id": ids["muzza"], "nombre": "Muzzarella", "cantidad": 2, "precio": "5500",
+             "categoria": "Lista para hornear", "categoria_codigo": "LISTA_HORNO"},
+            {"producto_id": ids["especial"], "nombre": "Especial", "cantidad": 10, "precio": "7000",
+             "categoria": "Lista para hornear", "categoria_codigo": "LISTA_HORNO"},
+            {"producto_id": ids["prepizza"], "nombre": "Prepizza", "cantidad": 12, "precio": "1300",
+             "categoria": "Lista para comer", "categoria_codigo": "LISTA_COMER"},
+            {"producto_id": ids["muzza"], "nombre": "Muzzarella", "cantidad": 1, "precio": "5200",
+             "categoria": "Eventos", "categoria_codigo": "EVENTOS"},
+        ]
+
+        async def run():
+            await state._refresh_cart_total()
+            assert not state.technical_error
+            assert [item["categoria_display"] for item in state.cart] == [
+                "Lista para hornear / Mayorista", "Lista para hornear / Mayorista", "Lista para comer", "Eventos",
+            ]
+            assert [item["categoria_codigo"] for item in state.cart] == [
+                "LISTA_HORNO", "LISTA_HORNO", "LISTA_COMER", "EVENTOS",
+            ]
+            assert state.cart[0]["subtotal_display"] == "9000,00"
+            assert "LISTA PARA HORNEAR / MAYORISTA" in unquote(state._build_whatsapp_url("PED-1", Decimal("1")))
+            _ = [event async for event in state.remove_cart_item(ids["especial"], "LISTA_HORNO")]
+            assert state.cart[0]["categoria_display"] == "Lista para hornear"
+            assert state.cart[0]["subtotal_display"] == "11000,00"
+            assert "MAYORISTA" not in unquote(state._build_whatsapp_url("PED-1", Decimal("1")))
+
+        asyncio.run(run())
 
 
 def test_combos_count_as_one_unit_each_for_wholesale_threshold() -> None:

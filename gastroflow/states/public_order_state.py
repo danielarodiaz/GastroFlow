@@ -21,6 +21,10 @@ from gastroflow.models import AppConfig, Categoria, Producto, ProductoCategoria,
 from gastroflow.services.media_storage import normalize_media_url
 from gastroflow.services.orders import (
     DEFAULT_CONTEXT_CODE,
+    EVENTS_CONTEXT_CODE,
+    EVENTS_MINIMUM_MESSAGE,
+    EVENTS_MINIMUM_UNITS,
+    WHOLESALE_CONTEXT_CODE,
     OrderItemInput,
     OrderService,
     PublicOrderInput,
@@ -128,7 +132,8 @@ def _create_public_order(payload: PublicOrderInput):
 
 def _price_public_cart(inputs: list[OrderItemInput]):
     with Session(engine) as session:
-        return OrderService(session)._price_items(inputs)
+        # Allow building an Events cart incrementally; checkout enforces the minimum.
+        return OrderService(session)._price_items(inputs, enforce_event_minimum=False)
 
 
 def _public_catalog_rows():
@@ -191,6 +196,15 @@ class PublicOrderState(rx.State):
     submission_token: str = ""
     is_loading_catalog: bool = True
     catalog_error: str = ""
+
+    @rx.var
+    def events_minimum_message(self) -> str:
+        units = sum(
+            int(item["cantidad"]) for item in self.cart
+            if item.get("categoria_codigo") == EVENTS_CONTEXT_CODE
+        )
+        has_events = any(item.get("categoria_codigo") == EVENTS_CONTEXT_CODE for item in self.cart)
+        return EVENTS_MINIMUM_MESSAGE if has_events and units < EVENTS_MINIMUM_UNITS else ""
 
     async def load_catalog(self):
         self.message = ""
@@ -339,6 +353,7 @@ class PublicOrderState(rx.State):
                     "producto_id": product_id,
                     "nombre": self.selected_product["nombre"],
                     "categoria": self.selected_product["categoria"],
+                    "categoria_display": self.selected_product["categoria"],
                     "categoria_codigo": self.selected_product["categoria_codigo"],
                     "precio": str(price),
                     "precio_display": _money_text(price),
@@ -425,6 +440,10 @@ class PublicOrderState(rx.State):
     async def submit_order(self, form_data: dict[str, Any]):
         if self.is_submitting or self.registered_order_code or self.is_updating_cart:
             return
+        if self.events_minimum_message:
+            self.message = self.events_minimum_message
+            yield rx.toast.error(self.message)
+            return
         # Read the actual inputs, including the last keystroke still awaiting debounce.
         for field in ("nombre_apellido", "telefono", "fecha_entrega", "horario_entrega", "direccion_delivery", "observaciones"):
             if field in form_data:
@@ -482,6 +501,8 @@ class PublicOrderState(rx.State):
 
     async def _refresh_cart_total(self) -> None:
         cart = [dict(item) for item in self.cart]
+        for cart_item in cart:
+            cart_item["categoria_display"] = cart_item["categoria"]
         if cart:
             try:
                 inputs = [
@@ -494,6 +515,8 @@ class PublicOrderState(rx.State):
                 ]
                 priced_items = await asyncio.to_thread(_price_public_cart, inputs)
                 for cart_item, priced_item in zip(cart, priced_items):
+                    if priced_item.categoria_venta_codigo == WHOLESALE_CONTEXT_CODE:
+                        cart_item["categoria_display"] = f"{cart_item['categoria']} / Mayorista"
                     base_unit = Decimal(str(cart_item["precio"]))
                     final_unit = Decimal(str(priced_item.precio_unitario))
                     quantity = Decimal(str(cart_item["cantidad"]))
@@ -514,6 +537,7 @@ class PublicOrderState(rx.State):
                     self.message = _friendly_error(exc)
                 self.technical_error = str(exc)
                 for cart_item in cart:
+                    cart_item["categoria_display"] = cart_item["categoria"]
                     subtotal = Decimal(str(cart_item["precio"])) * Decimal(str(cart_item["cantidad"]))
                     cart_item["subtotal"] = str(subtotal)
                     cart_item["subtotal_display"] = _money_text(subtotal)
@@ -600,13 +624,13 @@ class PublicOrderState(rx.State):
         lines.extend(["", "Mi pedido es", ""])
         categories = []
         for item in self.cart:
-            category = item.get("categoria", "Productos")
+            category = item.get("categoria_display", item.get("categoria", "Productos"))
             if category not in categories:
                 categories.append(category)
         for category in categories:
             lines.append(f"{category.upper()} ({category.upper()})")
             for item in self.cart:
-                if item.get("categoria", "Productos") != category:
+                if item.get("categoria_display", item.get("categoria", "Productos")) != category:
                     continue
                 lines.append(
                     f"{item['cantidad']}x {item['nombre']}: ${item['subtotal_display']}"

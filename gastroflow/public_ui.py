@@ -359,7 +359,7 @@ def cart_item(item: rx.Var[dict]) -> rx.Component:
         rx.box(width="0.5rem", align_self="stretch", border_radius="999px", background=GOLD),
         rx.vstack(
             rx.text(item["nombre"], font_weight="900", color=GREEN),
-            rx.text(item["categoria"], color=RED, font_size="0.88rem"),
+            rx.text(item["categoria_display"], color=RED, font_size="0.88rem"),
             rx.text("Cantidad: ", item["cantidad"], " | Subtotal: $", item["subtotal_display"], color="#725f45"),
             rx.cond(
                 item["promo_label"] != "",
@@ -603,9 +603,14 @@ def cart_view() -> rx.Component:
                             ),
                         ),
                         rx.cond(
+                            PublicOrderState.events_minimum_message != "",
+                            rx.text(PublicOrderState.events_minimum_message, color=RED, font_weight="900", role="alert"),
+                            rx.fragment(),
+                        ),
+                        rx.cond(
                             PublicOrderState.is_submitting,
                             rx.hstack(rx.spinner(), rx.text("Registrando tu pedido..."), role="status", align="center"),
-                            pill_button("Confirmar pedido", type="submit", background=RED, width="100%", disabled=PublicOrderState.is_updating_cart),
+                            pill_button("Confirmar pedido", type="submit", background=RED, width="100%", disabled=PublicOrderState.is_updating_cart | (PublicOrderState.events_minimum_message != "")),
                         ),
                         rx.cond(
                             ~PublicOrderState.is_submitting,

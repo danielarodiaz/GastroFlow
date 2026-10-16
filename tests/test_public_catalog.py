@@ -121,13 +121,14 @@ def test_cart_keeps_categories_separate_through_pricing_removal_and_checkout(con
         pricing_inputs.append(inputs)
         category_ids = {"LISTA_HORNO": 1, "LISTA_COMER": 2, "EVENTOS": 3}
         return [SimpleNamespace(
+            categoria_venta_codigo=item.contexto_origen,
             precio_unitario=Decimal(category_ids[item.contexto_origen] * 1000 + item.producto_id),
             subtotal=Decimal(category_ids[item.contexto_origen] * 1000 + item.producto_id) * item.cantidad,
         ) for item in inputs]
 
     def create(payload):
         orders.append(payload)
-        return SimpleNamespace(pedido=SimpleNamespace(codigo="PED-REGRESSION", monto_total=Decimal("5003")))
+        return SimpleNamespace(pedido=SimpleNamespace(codigo="PED-REGRESSION", monto_total=Decimal("32012")))
 
     monkeypatch.setattr(app_state, "_price_public_cart", price)
     monkeypatch.setattr(app_state, "_create_public_order", create)
@@ -136,15 +137,17 @@ def test_cart_keeps_categories_separate_through_pricing_removal_and_checkout(con
         for category_id in [1, 2, 3, 1]:
             state.show_category(category_id)
             state.open_product(1, category_id)
+            if category_id == 3:
+                state.detail_quantity = "10"
             _ = [event async for event in state.add_selected_to_cart()]
         assert [(item["categoria_codigo"], item["cantidad"]) for item in state.cart] == [
-            ("LISTA_HORNO", 2), ("LISTA_COMER", 1), ("EVENTOS", 1),
+            ("LISTA_HORNO", 2), ("LISTA_COMER", 1), ("EVENTOS", 10),
         ]
-        assert state.cart_total == "7004.00"
+        assert state.cart_total == "34013.00"
         assert [item.contexto_origen for item in pricing_inputs[-1]] == ["LISTA_HORNO", "LISTA_COMER", "EVENTOS"]
         _ = [event async for event in state.remove_cart_item(1, "LISTA_COMER")]
         assert [item["categoria_codigo"] for item in state.cart] == ["LISTA_HORNO", "EVENTOS"]
-        assert state.cart_total == "5003.00"
+        assert state.cart_total == "32012.00"
         state.nombre_apellido = "Cliente Prueba"
         state.telefono = "3815551234"
         state.fecha_entrega = "25/12/2026"
@@ -155,7 +158,7 @@ def test_cart_keeps_categories_separate_through_pricing_removal_and_checkout(con
     asyncio.run(run())
     assert len(orders) == 1
     assert [(item.producto_id, item.contexto_origen, item.cantidad) for item in orders[0].items] == [
-        (1, "LISTA_HORNO", 2), (1, "EVENTOS", 1),
+        (1, "LISTA_HORNO", 2), (1, "EVENTOS", 10),
     ]
 
 
