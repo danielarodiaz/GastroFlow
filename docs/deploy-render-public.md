@@ -93,12 +93,16 @@ Verificar en Chrome y en un teléfono: alternar envío/retiro, escribir y confir
 sin esperar, hacer varios clics al confirmar y abrir WhatsApp desde el enlace de
 recuperación. En la base debe quedar un solo pedido por confirmación.
 
-La carga pública usa dos consultas: categorías/productos visibles en un JOIN y
-zonas de envío. El logo se lee en paralelo. Los datos de catálogo y logo se
+La carga pública usa tres consultas: categorías/productos visibles en un JOIN,
+zonas de envío y reglas de mitad y mitad. El logo se lee en paralelo. Los datos de catálogo y logo se
 comparten durante 30 segundos por proceso del servidor; cambios desde Streamlit
 pueden tardar hasta 30 segundos en aparecer en una nueva carga. Los precios al
 confirmar siguen consultándose en la base, sin usar esa caché. Las imágenes del
 catálogo se cargan a medida que se acercan al área visible.
+
+La selección de mitad y mitad y la carga de sus 10 combinaciones se describen en
+[Mitad y mitad](half-pizzas.md). Las reglas se cargan con
+`python -m scripts.seed_half_pizzas`; no requieren una migración nueva.
 
 Al confirmar queda solo el texto de carga junto al spinner. El resumen de
 WhatsApp incluye por separado la fecha del pedido y la fecha de entrega.

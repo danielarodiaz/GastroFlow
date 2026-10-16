@@ -17,7 +17,8 @@ from sqlmodel import Session, select
 from gastroflow.data.database import engine
 from gastroflow.domain.enums import FormaPago
 from gastroflow.domain.errors import DomainError
-from gastroflow.models import AppConfig, Categoria, Producto, ProductoCategoria, ZonaEnvio
+from gastroflow.models import AppConfig, Categoria, ComboRegla, Producto, ProductoCategoria, ZonaEnvio
+from gastroflow.services.combo_rules import HALF_PIZZA_CONTEXTS
 from gastroflow.services.media_storage import normalize_media_url
 from gastroflow.services.orders import (
     DEFAULT_CONTEXT_CODE,
@@ -136,6 +137,18 @@ def _price_public_cart(inputs: list[OrderItemInput]):
         return OrderService(session)._price_items(inputs, enforce_event_minimum=False)
 
 
+def _cart_input(item: dict[str, Any]) -> OrderItemInput:
+    return OrderItemInput(
+        producto_id=int(item["producto_id"]), cantidad=int(item["cantidad"]),
+        producto_combo_id=int(item.get("producto_combo_id") or 0) or None,
+        contexto_origen=str(item.get("categoria_codigo") or DEFAULT_CONTEXT_CODE),
+    )
+
+
+def _pizza_key(product_id: int, combo_id: int = 0) -> tuple[int, int]:
+    return tuple(sorted((product_id, combo_id))) if combo_id else (product_id, 0)
+
+
 def _public_catalog_rows():
     with Session(engine) as session:
         # Fetch only public products together with their categories in one round trip.
@@ -150,10 +163,11 @@ def _public_catalog_rows():
             .where(Categoria.visible_cliente == True, Categoria.es_automatica == False, Categoria.activa == True)
         ).all()
         zones = session.exec(select(ZonaEnvio)).all()
+        combos = session.exec(select(ComboRegla)).all()
     categories = {category.id: category for category, _, _ in rows}
     products = {product.id: product for _, _, product in rows if product is not None}
     relations = [relation for _, relation, product in rows if relation is not None and product is not None]
-    return list(categories.values()), list(products.values()), relations, zones
+    return list(categories.values()), list(products.values()), relations, zones, combos
 
 
 class BrandState(rx.State):
@@ -173,6 +187,9 @@ class PublicOrderState(rx.State):
     selected_category_id: str = ""
     view: str = "categories"
     detail_quantity: str = "1"
+    pizza_mode: str = "Un solo sabor"
+    selected_combo_id: str = ""
+    combo_rules: list[dict[str, Any]] = []
     nombre_apellido: str = ""
     telefono: str = ""
     fecha_entrega: str = ""
@@ -198,6 +215,34 @@ class PublicOrderState(rx.State):
     catalog_error: str = ""
 
     @rx.var
+    def combo_options(self) -> list[dict[str, Any]]:
+        product = self.selected_product
+        if not product or product.get("categoria_codigo") not in HALF_PIZZA_CONTEXTS:
+            return []
+        by_pair = {tuple(sorted((rule["producto_a_id"], rule["producto_b_id"]))): rule for rule in self.combo_rules}
+        options = []
+        for other in self.products:
+            if other["id"] == product["id"] or str(other["categoria_id"]) != str(product["categoria_id"]):
+                continue
+            rule = by_pair.get(tuple(sorted((product["id"], other["id"]))))
+            if rule is None:
+                continue
+            price = OrderService._combo_price(ComboRegla(**rule), Decimal(product["precio"]), Decimal(other["precio"])).quantize(MONEY_QUANT)
+            options.append({"id": other["id"], "id_str": str(other["id"]), "nombre": other["nombre"],
+                "precio": str(price), "precio_display": _money_text(price)})
+        return options
+
+    @rx.var
+    def selected_combo_name(self) -> str:
+        return next((option["nombre"] for option in self.combo_options if option["id_str"] == self.selected_combo_id), "")
+
+    @rx.var
+    def detail_price_display(self) -> str:
+        if self.pizza_mode == "Mitad y mitad":
+            return next((option["precio_display"] for option in self.combo_options if option["id_str"] == self.selected_combo_id), "—")
+        return _money_text(self.selected_product.get("precio", "0"))
+
+    @rx.var
     def events_minimum_message(self) -> str:
         units = sum(
             int(item["cantidad"]) for item in self.cart
@@ -220,7 +265,7 @@ class PublicOrderState(rx.State):
             )
             brand = await self.get_state(BrandState)
             brand.logo_url = _normalize_upload_path(logo_url)
-            categories, products, product_categories, zones = rows
+            categories, products, product_categories, zones, combos = rows
         except Exception as exc:
             self.is_loading_catalog = False
             self.catalog_error = "No pudimos cargar el catálogo. Presioná Reintentar."
@@ -228,6 +273,7 @@ class PublicOrderState(rx.State):
             return
 
         category_names = {category.id: category.nombre for category in categories}
+        self.combo_rules = [rule.model_dump() for rule in combos]
         category_codes = {category.id: category.codigo for category in categories}
         product_by_id = {product.id: product for product in products if product.activo}
         product_count_by_category: dict[int, int] = {}
@@ -291,6 +337,8 @@ class PublicOrderState(rx.State):
         self.selected_category_id = ""
         self.visible_products = []
         self.selected_product = {}
+        self.pizza_mode = "Un solo sabor"
+        self.selected_combo_id = ""
         self.message = ""
 
     def show_category(self, category_id: int) -> None:
@@ -299,6 +347,8 @@ class PublicOrderState(rx.State):
             product for product in self.products if str(product["categoria_id"]) == str(category_id)
         ]
         self.selected_product = {}
+        self.pizza_mode = "Un solo sabor"
+        self.selected_combo_id = ""
         self.view = "products"
         self.message = ""
 
@@ -318,9 +368,25 @@ class PublicOrderState(rx.State):
             self.message = "Este producto no está disponible en la categoría seleccionada."
             return
         self.selected_product = product
+        self.pizza_mode = "Un solo sabor"
+        self.selected_combo_id = ""
         self.detail_quantity = "1"
         self.view = "detail"
         self.message = ""
+
+    def set_pizza_mode(self, value: str) -> None:
+        if value not in {"Un solo sabor", "Mitad y mitad"}:
+            return
+        if value == "Mitad y mitad" and not self.combo_options:
+            return
+        self.pizza_mode = value
+        self.selected_combo_id = ""
+        self.message = ""
+
+    def select_combo(self, product_id: str) -> None:
+        if any(option["id_str"] == product_id for option in self.combo_options):
+            self.selected_combo_id = product_id
+            self.message = ""
 
     async def add_selected_to_cart(self):
         if self.is_updating_cart or self.registered_order_code or self.is_submitting:
@@ -337,21 +403,37 @@ class PublicOrderState(rx.State):
             return
 
         product_id = int(self.selected_product["id"])
+        combo_id = 0
+        price = Decimal(str(self.selected_product["precio"]))
+        name = self.selected_product["nombre"]
+        if self.pizza_mode == "Mitad y mitad":
+            option = next((option for option in self.combo_options if option["id_str"] == self.selected_combo_id), None)
+            if option is None:
+                self.message = "Elegí el sabor de la otra mitad."
+                return
+            combo_id = int(option["id"])
+            price = Decimal(option["precio"])
+            # Canonical order makes A/B and B/A the same cart line.
+            if product_id > combo_id:
+                name = f"Mitad {option['nombre']} / mitad {name}"
+                product_id, combo_id = combo_id, product_id
+            else:
+                name = f"Mitad {name} / mitad {option['nombre']}"
         cart = list(self.cart)
         for index, item in enumerate(cart):
             if (
-                int(item["producto_id"]) == product_id
+                _pizza_key(int(item["producto_id"]), int(item.get("producto_combo_id") or 0)) == _pizza_key(product_id, combo_id)
                 and item["categoria_codigo"] == self.selected_product["categoria_codigo"]
             ):
                 item["cantidad"] = int(item["cantidad"]) + quantity
                 cart[index] = item
                 break
         else:
-            price = Decimal(str(self.selected_product["precio"]))
             cart.append(
                 {
                     "producto_id": product_id,
-                    "nombre": self.selected_product["nombre"],
+                    "producto_combo_id": combo_id,
+                    "nombre": name,
                     "categoria": self.selected_product["categoria"],
                     "categoria_display": self.selected_product["categoria"],
                     "categoria_codigo": self.selected_product["categoria_codigo"],
@@ -378,13 +460,13 @@ class PublicOrderState(rx.State):
         self.view = "products"
         yield rx.toast.success(self.message)
 
-    async def remove_cart_item(self, product_id: int, category_code: str):
+    async def remove_cart_item(self, product_id: int, category_code: str, combo_product_id: int = 0):
         if self.is_updating_cart or self.registered_order_code or self.is_submitting:
             return
         self.cart = [
             item for item in self.cart
             if not (
-                int(item["producto_id"]) == int(product_id)
+                _pizza_key(int(item["producto_id"]), int(item.get("producto_combo_id") or 0)) == _pizza_key(int(product_id), int(combo_product_id))
                 and item["categoria_codigo"] == category_code
             )
         ]
@@ -462,14 +544,7 @@ class PublicOrderState(rx.State):
             self.horario_entrega = _complete_time(self.horario_entrega)
             if self.delivery_mode == "delivery" and not self.zona_envio_id:
                 raise ValueError("Selecciona una zona de envio.")
-            items = [
-                OrderItemInput(
-                    producto_id=int(item["producto_id"]),
-                    cantidad=int(item["cantidad"]),
-                    contexto_origen=str(item.get("categoria_codigo") or DEFAULT_CONTEXT_CODE),
-                )
-                for item in self.cart
-            ]
+            items = [_cart_input(item) for item in self.cart]
             if not self.submission_token:
                 self.submission_token = str(uuid4())
             payload = PublicOrderInput(
@@ -505,14 +580,7 @@ class PublicOrderState(rx.State):
             cart_item["categoria_display"] = cart_item["categoria"]
         if cart:
             try:
-                inputs = [
-                    OrderItemInput(
-                        producto_id=int(item["producto_id"]),
-                        cantidad=int(item["cantidad"]),
-                        contexto_origen=str(item.get("categoria_codigo") or DEFAULT_CONTEXT_CODE),
-                    )
-                    for item in cart
-                ]
+                inputs = [_cart_input(item) for item in cart]
                 priced_items = await asyncio.to_thread(_price_public_cart, inputs)
                 for cart_item, priced_item in zip(cart, priced_items):
                     if priced_item.categoria_venta_codigo == WHOLESALE_CONTEXT_CODE:

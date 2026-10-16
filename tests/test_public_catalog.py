@@ -41,7 +41,7 @@ def contextual_catalog(monkeypatch):
     ]
     catalog_cache.invalidate()
     brand_cache.invalidate()
-    monkeypatch.setattr(app_state, "_public_catalog_rows", lambda: (categories, products, relations, []))
+    monkeypatch.setattr(app_state, "_public_catalog_rows", lambda: (categories, products, relations, [], []))
     monkeypatch.setattr(app_state, "_read_brand_logo_url", lambda: "")
 
     async def get_brand(self, cls):
@@ -187,7 +187,7 @@ def test_failed_catalog_read_can_be_retried():
     assert cache.get(lambda: "recovered") == "recovered"
 
 
-def test_catalog_join_uses_two_reads_and_filters_private_products(monkeypatch):
+def test_catalog_join_uses_three_reads_and_filters_private_products(monkeypatch):
     engine = create_engine("sqlite://")
     Categoria.__table__.create(engine)
     # Test-only SQLite representation of PostgreSQL's JSONB photo list.
@@ -196,6 +196,7 @@ def test_catalog_join_uses_two_reads_and_filters_private_products(monkeypatch):
     product_table.create(engine)
     ProductoCategoria.__table__.create(engine)
     ZonaEnvio.__table__.create(engine)
+    app_state.ComboRegla.__table__.create(engine)
     with Session(engine) as session:
         session.add_all([
             Categoria(id=1, codigo="PUBLIC", nombre="Público"),
@@ -214,8 +215,9 @@ def test_catalog_join_uses_two_reads_and_filters_private_products(monkeypatch):
     reads = []
     event.listen(engine, "before_cursor_execute", lambda conn, cursor, statement, *args: reads.append(statement))
     monkeypatch.setattr(app_state, "engine", engine)
-    categories, products, relations, zones = app_state._public_catalog_rows()
-    assert len(reads) == 2
+    categories, products, relations, zones, combos = app_state._public_catalog_rows()
+    assert len(reads) == 3
+    assert combos == []
     assert {category.id for category in categories} == {1, 2}
     assert [product.id for product in products] == [1]
     assert [(relation.producto_id, relation.categoria_id) for relation in relations] == [(1, 1)]
@@ -230,7 +232,7 @@ def test_catalog_load_failure_exits_spinner_and_retry_recovers(monkeypatch):
         attempts.append(1)
         if len(attempts) == 1:
             raise RuntimeError("connection interrupted")
-        return [Categoria(id=1, codigo="PUBLIC", nombre="Público")], [], [], []
+        return [Categoria(id=1, codigo="PUBLIC", nombre="Público")], [], [], [], []
     monkeypatch.setattr(app_state, "_public_catalog_rows", load_rows)
     monkeypatch.setattr(app_state, "_read_brand_logo_url", lambda: "")
     brand = type("Brand", (), {"logo_url": ""})()

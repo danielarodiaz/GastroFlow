@@ -310,6 +310,10 @@ def products_view() -> rx.Component:
     )
 
 
+def combo_option(option: rx.Var[dict]) -> rx.Component:
+    return rx.select.item(option["nombre"], value=option["id_str"])
+
+
 def detail_view() -> rx.Component:
     return rx.vstack(
         rx.hstack(
@@ -329,7 +333,37 @@ def detail_view() -> rx.Component:
                     color=GREEN,
                 ),
                 rx.text(PublicOrderState.selected_product["descripcion"], color="#5a4b38", font_size="1.02rem"),
-                rx.text("$", PublicOrderState.selected_product["precio"], font_size="1.8rem", font_weight="900"),
+                rx.cond(
+                    PublicOrderState.combo_options.length() > 0,
+                    rx.vstack(
+                        field("¿Cómo la querés?", rx.radio(
+                            ["Un solo sabor", "Mitad y mitad"],
+                            value=PublicOrderState.pizza_mode, on_change=PublicOrderState.set_pizza_mode,
+                        )),
+                        rx.cond(
+                            PublicOrderState.pizza_mode == "Mitad y mitad",
+                            rx.vstack(
+                                field("Elegí la otra mitad", rx.select.root(
+                                    rx.select.trigger(placeholder="Seleccioná un sabor", width="100%"),
+                                    rx.select.content(rx.foreach(PublicOrderState.combo_options, combo_option)),
+                                    value=PublicOrderState.selected_combo_id, on_change=PublicOrderState.select_combo,
+                                )),
+                                rx.cond(
+                                    PublicOrderState.selected_combo_id != "",
+                                    rx.text("Mitad ", PublicOrderState.selected_product["nombre"], " / mitad ", PublicOrderState.selected_combo_name,
+                                        color=GREEN, font_weight="900"),
+                                    rx.fragment(),
+                                ),
+                                rx.text("El precio es el promedio de ambos sabores. Cada unidad es una pizza completa.", color="#5a4b38", font_size="0.9rem"),
+                                align="stretch", spacing="2", width="100%",
+                            ),
+                            rx.fragment(),
+                        ),
+                        align="stretch", spacing="3", width="100%",
+                    ),
+                    rx.fragment(),
+                ),
+                rx.text("$", PublicOrderState.detail_price_display, font_size="1.8rem", font_weight="900"),
                 field(
                     "Cantidad",
                     rx.input(
@@ -341,7 +375,9 @@ def detail_view() -> rx.Component:
                         style=input_style(),
                     ),
                 ),
-                pill_button("Agregar al carrito", on_click=PublicOrderState.add_selected_to_cart, background=RED, loading=PublicOrderState.is_updating_cart, disabled=PublicOrderState.is_submitting | (PublicOrderState.registered_order_code != "")),
+                pill_button("Agregar al carrito", on_click=PublicOrderState.add_selected_to_cart, background=RED, loading=PublicOrderState.is_updating_cart,
+                    disabled=PublicOrderState.is_submitting | (PublicOrderState.registered_order_code != "")
+                    | ((PublicOrderState.pizza_mode == "Mitad y mitad") & (PublicOrderState.selected_combo_id == ""))),
                 accent=True,
             ),
             columns="repeat(auto-fit, minmax(min(100%, 340px), 1fr))",
@@ -370,7 +406,7 @@ def cart_item(item: rx.Var[dict]) -> rx.Component:
             align="start",
             flex="1",
         ),
-        outline_button("Quitar", on_click=PublicOrderState.remove_cart_item(item["producto_id"], item["categoria_codigo"]), disabled=PublicOrderState.is_updating_cart | PublicOrderState.is_submitting | (PublicOrderState.registered_order_code != "")),
+        outline_button("Quitar", on_click=PublicOrderState.remove_cart_item(item["producto_id"], item["categoria_codigo"], item.get("producto_combo_id", 0)), disabled=PublicOrderState.is_updating_cart | PublicOrderState.is_submitting | (PublicOrderState.registered_order_code != "")),
         width="100%",
         padding="0.85rem",
         border_radius="14px",

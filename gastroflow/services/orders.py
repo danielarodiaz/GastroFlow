@@ -28,6 +28,7 @@ from gastroflow.models import (
     ZonaEnvio,
 )
 from gastroflow.services.codes import next_business_code
+from gastroflow.services.combo_rules import HALF_PIZZA_CONTEXTS
 
 MONEY_QUANT = Decimal("0.01")
 DEFAULT_CONTEXT_CODE = "LISTA_HORNO"
@@ -289,11 +290,13 @@ class OrderService:
                     promotion=promotion,
                 )
             if item.producto_combo_id is not None:
+                self._validate_combo_origin(item, origin_category, products)
                 combo_product = products[item.producto_combo_id]
                 combo_base_price = self._item_base_price(combo_product.id or 0, category_prices, is_combo=True)
                 combo_rule = self._get_combo_rule(product.id or 0, combo_product.id or 0)
-                unit_price = self._combo_price(combo_rule, base_price, combo_base_price)
+                unit_price = self._money(self._combo_price(combo_rule, base_price, combo_base_price))
                 subtotal = unit_price * item.cantidad
+                base_price = unit_price
                 requires_confirmation = combo_rule.requiere_confirmacion
 
             unit_price = self._money(unit_price)
@@ -309,6 +312,23 @@ class OrderService:
                 )
             )
         return priced_items
+
+    def _validate_combo_origin(self, item: OrderItemInput, category: Categoria, products: dict[int, Producto]) -> None:
+        if category.codigo not in HALF_PIZZA_CONTEXTS:
+            raise ValidationError("Mitad y mitad está disponible en Lista para hornear y Lista para comer.")
+        if item.producto_id == item.producto_combo_id:
+            raise ValidationError("Elegí dos sabores distintos para mitad y mitad.")
+        ids = {item.producto_id, item.producto_combo_id}
+        if any(not products[product_id].activo for product_id in ids):
+            raise ValidationError("Uno de los sabores ya no está disponible.")
+        available = self.session.exec(select(ProductoCategoria).where(
+            ProductoCategoria.categoria_id == category.id,
+            ProductoCategoria.producto_id.in_(ids),
+            ProductoCategoria.activo == True,
+            ProductoCategoria.visible == True,
+        )).all()
+        if {relation.producto_id for relation in available} != ids:
+            raise ValidationError("Ambos sabores deben estar disponibles en la misma categoría elegida.")
 
     def _resolve_sale_category(
         self,
@@ -486,8 +506,8 @@ class OrderService:
             raise ValidationError("La combinacion de productos no esta habilitada.")
         return combo_rule
 
+    @staticmethod
     def _combo_price(
-        self,
         combo_rule: ComboRegla,
         product_a_price: Decimal,
         product_b_price: Decimal,
