@@ -368,13 +368,7 @@ class OrderService:
         quantity: int,
         promotion: AppliedPromotion,
     ) -> tuple[Decimal, Decimal]:
-        if promotion.precio_total is None:
-            unit_price = self._money(promotion.precio_unitario)
-            return unit_price, self._money(unit_price * quantity)
-
-        package_count = quantity // promotion.cantidad_minima
-        remainder = quantity % promotion.cantidad_minima
-        subtotal = (promotion.precio_total * package_count) + (base_price * remainder)
+        subtotal = self._promotion_line_total(quantity, base_price, promotion)
         effective_unit = subtotal / Decimal(quantity)
         return self._money(effective_unit), self._money(subtotal)
 
@@ -442,12 +436,16 @@ class OrderService:
         category_price: Decimal | None,
         promotion: AppliedPromotion,
     ) -> Decimal:
-        if promotion.precio_total is None:
-            return promotion.precio_unitario * quantity
+        # Both promotion formats apply to complete groups; extras keep base price.
+        package_price = (
+            promotion.precio_total
+            if promotion.precio_total is not None
+            else promotion.precio_unitario * promotion.cantidad_minima
+        )
         package_count = quantity // promotion.cantidad_minima
         remainder = quantity % promotion.cantidad_minima
-        remainder_price = (category_price or promotion.precio_unitario) * remainder
-        return (promotion.precio_total * package_count) + remainder_price
+        base_price = category_price if category_price is not None else promotion.precio_unitario
+        return (package_price * package_count) + (base_price * remainder)
 
     def _get_combo_rule(self, product_a_id: int, product_b_id: int) -> ComboRegla:
         combo_rule = self.session.exec(

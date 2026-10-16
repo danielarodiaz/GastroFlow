@@ -3,7 +3,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import text
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, create_engine
+from sqlmodel import Session, create_engine, select
 
 from gastroflow.domain.enums import EstadoPedido, ReglaPrecioCombo, TipoPromocion, UnidadVenta
 from gastroflow.domain.errors import ValidationError
@@ -380,6 +380,103 @@ def test_package_promotion_keeps_exact_total() -> None:
 
         assert priced_items[0].precio_unitario == Decimal("1166.67")
         assert priced_items[0].subtotal == Decimal("3500.00")
+
+
+@pytest.mark.parametrize("quantity", range(1, 10))
+@pytest.mark.parametrize(
+    "minimum,base_price,promo_unit,package_total,context",
+    [
+        (2, "6500", "6000", None, "LISTA_HORNO"),
+        (3, "1300", "1166.67", "3500", "LISTA_COMER"),
+        (3, "1300", "1200", None, "LISTA_COMER"),
+    ],
+)
+def test_promotions_charge_remainder_at_base_price(quantity, minimum, base_price, promo_unit, package_total, context):
+    with _session() as session:
+        ids = _catalog(session)
+        product_id = ids["muzza"] if context == "LISTA_HORNO" else ids["prepizza"]
+        category_id = ids["lista_horno"] if context == "LISTA_HORNO" else ids["lista_comer"]
+        relation = session.exec(select(ProductoCategoria).where(
+            ProductoCategoria.producto_id == product_id,
+            ProductoCategoria.categoria_id == category_id,
+        )).one()
+        relation.precio = Decimal(base_price)
+        session.add(relation)
+        promo = Promocion(
+            codigo="PROMO_REGRESSION", nombre="Promo por grupos",
+            tipo=TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
+            cantidad_minima=minimum, precio_unitario_promocional=Decimal(promo_unit),
+            precio_total_promocional=Decimal(package_total) if package_total else None,
+        )
+        session.add(promo)
+        session.flush()
+        session.add(PromocionProducto(promocion_id=promo.id, producto_id=product_id))
+        session.commit()
+        item = OrderService(session)._price_items([
+            OrderItemInput(producto_id=product_id, cantidad=quantity, contexto_origen=context),
+        ])[0]
+        groups, remainder = divmod(quantity, minimum)
+        group_price = Decimal(package_total) if package_total else Decimal(promo_unit) * minimum
+        expected = groups * group_price + remainder * Decimal(base_price)
+        assert item.subtotal == expected
+        assert item.precio_unitario == (expected / quantity).quantize(Decimal("0.01"))
+
+
+def test_best_promotion_is_selected_using_complete_groups_and_base_price_remainder():
+    with _session() as session:
+        ids = _catalog(session)
+        relation = session.exec(select(ProductoCategoria).where(
+            ProductoCategoria.producto_id == ids["muzza"],
+            ProductoCategoria.categoria_id == ids["lista_horno"],
+        )).one()
+        relation.precio = Decimal("6500")
+        session.add(relation)
+        for minimum, unit_price in [(2, "6000"), (3, "6100")]:
+            promo = Promocion(
+                codigo=f"PROMO_{minimum}", nombre=f"Promo de {minimum}",
+                tipo=TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
+                cantidad_minima=minimum, precio_unitario_promocional=Decimal(unit_price),
+            )
+            session.add(promo)
+            session.flush()
+            session.add(PromocionProducto(promocion_id=promo.id, producto_id=ids["muzza"]))
+        session.commit()
+        item = OrderService(session)._price_items([OrderItemInput(producto_id=ids["muzza"], cantidad=3)])[0]
+        assert item.subtotal == Decimal("18300.00")
+
+
+def test_public_cart_displays_discount_only_for_complete_promotion_groups(monkeypatch):
+    import asyncio
+
+    from gastroflow.states import public_order_state
+    from gastroflow.states.public_order_state import PublicOrderState
+
+    with _session() as session:
+        ids = _catalog(session)
+        relation = session.exec(select(ProductoCategoria).where(
+            ProductoCategoria.producto_id == ids["muzza"],
+            ProductoCategoria.categoria_id == ids["lista_horno"],
+        )).one()
+        relation.precio = Decimal("6500")
+        session.add(relation)
+        promo = Promocion(
+            codigo="PROMO_MUZZA_HORNO_2", nombre="Muzzarella x2",
+            tipo=TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
+            cantidad_minima=2, precio_unitario_promocional=Decimal("6000"),
+        )
+        session.add(promo)
+        session.flush()
+        session.add(PromocionProducto(promocion_id=promo.id, producto_id=ids["muzza"]))
+        session.commit()
+        monkeypatch.setattr(public_order_state, "_price_public_cart", lambda items: OrderService(session)._price_items(items))
+        state = PublicOrderState(_reflex_internal_init=True)
+        state.cart = [{"producto_id": ids["muzza"], "nombre": "Muzzarella", "cantidad": 3,
+            "precio": "6500", "categoria": "Lista para hornear", "categoria_codigo": "LISTA_HORNO"}]
+        asyncio.run(state._refresh_cart_total())
+        assert not state.technical_error
+        assert state.cart[0]["subtotal_display"] == "18500,00"
+        assert state.cart[0]["promo_label"] == "Promo aplicada: $-1000,00"
+        assert state.cart_total_display == "18500,00"
 
 
 def test_mixed_context_items_keep_each_promotion() -> None:
