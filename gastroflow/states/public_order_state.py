@@ -288,8 +288,21 @@ class PublicOrderState(rx.State):
         self.view = "products"
         self.message = ""
 
-    def open_product(self, product_id: int) -> None:
-        product = next((item for item in self.products if str(item["id"]) == str(product_id)), {})
+    def open_product(self, product_id: int, category_id: int) -> None:
+        # A product can have a different presentation and price in each category.
+        # Reject stale clicks from a category that is no longer being viewed.
+        if str(category_id) != self.selected_category_id:
+            return
+        product = next((
+            item for item in self.products
+            if str(item["id"]) == str(product_id)
+            and str(item["categoria_id"]) == str(category_id)
+        ), {})
+        if not product:
+            self.selected_product = {}
+            self.view = "products"
+            self.message = "Este producto no está disponible en la categoría seleccionada."
+            return
         self.selected_product = product
         self.detail_quantity = "1"
         self.view = "detail"
@@ -312,7 +325,10 @@ class PublicOrderState(rx.State):
         product_id = int(self.selected_product["id"])
         cart = list(self.cart)
         for index, item in enumerate(cart):
-            if int(item["producto_id"]) == product_id:
+            if (
+                int(item["producto_id"]) == product_id
+                and item["categoria_codigo"] == self.selected_product["categoria_codigo"]
+            ):
                 item["cantidad"] = int(item["cantidad"]) + quantity
                 cart[index] = item
                 break
@@ -347,10 +363,16 @@ class PublicOrderState(rx.State):
         self.view = "products"
         yield rx.toast.success(self.message)
 
-    async def remove_cart_item(self, product_id: int):
+    async def remove_cart_item(self, product_id: int, category_code: str):
         if self.is_updating_cart or self.registered_order_code or self.is_submitting:
             return
-        self.cart = [item for item in self.cart if int(item["producto_id"]) != int(product_id)]
+        self.cart = [
+            item for item in self.cart
+            if not (
+                int(item["producto_id"]) == int(product_id)
+                and item["categoria_codigo"] == category_code
+            )
+        ]
         self.is_updating_cart = True
         yield
         try:

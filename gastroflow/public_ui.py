@@ -257,7 +257,7 @@ def product_card(product: rx.Var[dict]) -> rx.Component:
                 rx.hstack(
                     rx.text("$", product["precio"], font_weight="900", color=INK),
                     rx.spacer(),
-                    outline_button("Ver", on_click=PublicOrderState.open_product(product["id"])),
+                    outline_button("Ver", on_click=PublicOrderState.open_product(product["id"], product["categoria_id"])),
                     width="100%",
                     align="center",
                 ),
@@ -359,6 +359,7 @@ def cart_item(item: rx.Var[dict]) -> rx.Component:
         rx.box(width="0.5rem", align_self="stretch", border_radius="999px", background=GOLD),
         rx.vstack(
             rx.text(item["nombre"], font_weight="900", color=GREEN),
+            rx.text(item["categoria"], color=RED, font_size="0.88rem"),
             rx.text("Cantidad: ", item["cantidad"], " | Subtotal: $", item["subtotal_display"], color="#725f45"),
             rx.cond(
                 item["promo_label"] != "",
@@ -369,7 +370,7 @@ def cart_item(item: rx.Var[dict]) -> rx.Component:
             align="start",
             flex="1",
         ),
-        outline_button("Quitar", on_click=PublicOrderState.remove_cart_item(item["producto_id"]), disabled=PublicOrderState.is_updating_cart | PublicOrderState.is_submitting | (PublicOrderState.registered_order_code != "")),
+        outline_button("Quitar", on_click=PublicOrderState.remove_cart_item(item["producto_id"], item["categoria_codigo"]), disabled=PublicOrderState.is_updating_cart | PublicOrderState.is_submitting | (PublicOrderState.registered_order_code != "")),
         width="100%",
         padding="0.85rem",
         border_radius="14px",
