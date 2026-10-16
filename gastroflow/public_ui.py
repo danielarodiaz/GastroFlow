@@ -303,7 +303,7 @@ def products_view() -> rx.Component:
         rx.cond(
             PublicOrderState.special_catalog,
             rx.vstack(
-                rx.text("Se prepara únicamente por encargo y está sujeto a aceptación de disponibilidad del local. El precio mostrado es definitivo.", color=RED, font_weight="700"),
+                rx.text("Se prepara únicamente por encargo y está sujeto a aceptación de disponibilidad del local.", color=RED, font_weight="700"),
                 outline_button("Volver al catálogo habitual", on_click=PublicOrderState.show_category(PublicOrderState.selected_category_id)),
                 align="stretch", width="100%",
             ),
@@ -348,7 +348,7 @@ def detail_view() -> rx.Component:
                 ),
                 rx.text(PublicOrderState.selected_product["descripcion"], color="#5a4b38", font_size="1.02rem"),
                 rx.cond(PublicOrderState.detail_is_special,
-                    rx.text("Pedido especial · El precio es definitivo. Sujeto a aceptación de disponibilidad del local.", color=RED, font_weight="900", role="status"),
+                    rx.text("Pedido especial · Sujeto a aceptación de disponibilidad del local.", color=RED, font_weight="900", role="status"),
                     rx.fragment()),
                 rx.cond(PublicOrderState.has_special_catalog & ~PublicOrderState.special_catalog,
                     outline_button("Consultar sabores para pedido especial", on_click=PublicOrderState.show_special_category(PublicOrderState.selected_category_id)), rx.fragment()),
