@@ -49,10 +49,52 @@ def test_optional_year_and_minutes():
     assert _complete_time("21") == "21:00"
     assert _complete_time("9") == "09:00"
     assert _complete_time("21:45") == "21:45"
+    assert _complete_time("2115") == "21:15"
+    assert _complete_time("0915") == "09:15"
     with pytest.raises(ValueError):
         _complete_time("24")
     with pytest.raises(ValueError):
         _parse_delivery_date("31/02")
+
+
+def test_delivery_time_raw_blur_never_removes_colon_and_allows_deletion():
+    state = _state()
+    state.set_horario_entrega("2115")
+    assert state.horario_entrega == "21:15"
+    state.complete_delivery_time("2115")
+    assert state.horario_entrega == "21:15"
+    state.set_horario_entrega("2115")  # A delayed change event must agree with blur.
+    assert state.horario_entrega == "21:15"
+    for value in ("21:15", "21:1", "21", "2", ""):
+        state.set_horario_entrega(value)
+        assert state.horario_entrega == value
+        state.complete_delivery_time(value)
+        assert state.horario_entrega == value
+    state.complete_delivery_time("21")
+    assert state.horario_entrega == "21"
+    for invalid in ("2415", "2160", "211", "21:1"):
+        with pytest.raises(ValueError):
+            _complete_time(invalid)
+
+
+def test_confirmation_accepts_raw_four_digit_time_without_waiting_for_mask(monkeypatch):
+    calls = []
+
+    def create(payload):
+        calls.append(payload)
+        return SimpleNamespace(pedido=SimpleNamespace(codigo="PED-HORARIO", monto_total=Decimal("100")))
+
+    monkeypatch.setattr(app_state, "_create_public_order", create)
+    monkeypatch.setattr(PublicOrderState, "_build_whatsapp_url", lambda *args: "https://wa.me/123?text=pedido")
+    state = _state()
+
+    async def run():
+        _ = [event async for event in state.submit_order({"horario_entrega": "2115"})]
+
+    asyncio.run(run())
+    assert state.registered_order_code == "PED-HORARIO"
+    assert state.horario_entrega == "21:15"
+    assert calls[0].horario_entrega == time(21, 15)
 
 
 def test_delivery_date_adds_separators_and_raw_blur_does_not_remove_them():

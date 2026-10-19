@@ -125,8 +125,13 @@ def _complete_time(value: str) -> str:
     clean = value.strip()
     if clean.isdigit() and len(clean) <= 2:
         clean = f"{int(clean):02d}:00"
+    elif clean.isdigit() and len(clean) == 4:
+        clean = _mask_time(clean)
     _validate_time(clean)
-    return clean
+    hour, minute = clean.split(":")
+    if len(minute) != 2:
+        raise ValueError("Ingresa un horario valido con formato HH:MM.")
+    return f"{int(hour):02d}:{int(minute):02d}"
 
 
 def _create_public_order(payload: PublicOrderInput):
@@ -524,10 +529,8 @@ class PublicOrderState(rx.State):
         self.fecha_entrega = _mask_date(value)
 
     def complete_delivery_time(self, value: str) -> None:
-        try:
-            self.horario_entrega = _complete_time(value)
-        except ValueError:
-            self.horario_entrega = value
+        # Blur can carry raw digits. Keep the mask without completing partial edits.
+        self.horario_entrega = _mask_time(value)
 
     def set_delivery_mode(self, value: str) -> None:
         self.delivery_mode = value

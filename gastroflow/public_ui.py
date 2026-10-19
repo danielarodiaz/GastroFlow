@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import reflex as rx
+from gastroflow.components.delivery_input import delivery_date_input, delivery_time_input
 
 from gastroflow.states.public_order_state import BrandState, PublicOrderState
 
@@ -117,6 +118,24 @@ def select_style() -> dict[str, str]:
 
 def placeholder_style() -> dict[str, str]:
     return {"color": "#514332", "opacity": "1"}
+
+
+def delivery_input_style() -> dict[str, object]:
+    return {
+        **input_style(),
+        "width": "100%",
+        "height": "2.5rem",
+        "padding": "0.5rem 0.75rem",
+        "font_family": "inherit",
+        "font_size": "var(--font-size-2, 14px)",
+        "line_height": "var(--line-height-2, 20px)",
+        "&::placeholder": {
+            **placeholder_style(),
+            "font_family": "inherit",
+            "font_size": "inherit",
+            "font_weight": "inherit",
+        },
+    }
 
 
 def panel(*children: rx.Component, accent: bool = False, **props: str) -> rx.Component:
@@ -574,31 +593,26 @@ def cart_view() -> rx.Component:
                         ),
                         field(
                             "Fecha de entrega",
-                            rx.input(
-                                value=PublicOrderState.fecha_entrega,
+                            delivery_date_input(
+                                default_value=PublicOrderState.fecha_entrega,
                                 name="fecha_entrega",
-                                type="text",
-                                on_change=PublicOrderState.set_fecha_entrega,
                                 on_blur=PublicOrderState.complete_delivery_date,
                                 placeholder="DD-MM (año opcional)",
                                 max_length=10,
                                 input_mode="numeric",
-                                style=input_style(),
-                                _placeholder=placeholder_style(),
+                                style=delivery_input_style(),
                             ),
                         ),
                         field(
                             "Horario ideal de entrega",
-                            rx.input(
-                                value=PublicOrderState.horario_entrega,
+                            delivery_time_input(
+                                default_value=PublicOrderState.horario_entrega,
                                 name="horario_entrega",
-                                on_change=PublicOrderState.set_horario_entrega,
                                 on_blur=PublicOrderState.complete_delivery_time,
                                 placeholder="21 o 21:30",
                                 max_length=5,
                                 input_mode="numeric",
-                                style=input_style(),
-                                _placeholder=placeholder_style(),
+                                style=delivery_input_style(),
                             ),
                         ),
                         field(
