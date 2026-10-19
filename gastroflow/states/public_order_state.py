@@ -520,10 +520,8 @@ class PublicOrderState(rx.State):
         self.horario_entrega = _mask_time(value)
 
     def complete_delivery_date(self, value: str) -> None:
-        try:
-            self.fecha_entrega = _date_text(_parse_delivery_date(value))
-        except ValueError:
-            self.fecha_entrega = _mask_date(value)
+        # Keep partial edits intact. Infer the optional year only at checkout.
+        self.fecha_entrega = _mask_date(value)
 
     def complete_delivery_time(self, value: str) -> None:
         try:

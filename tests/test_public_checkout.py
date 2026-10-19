@@ -61,9 +61,8 @@ def test_delivery_date_adds_separators_and_raw_blur_does_not_remove_them():
                           ("19102", "19-10-2"), ("19102026", "19-10-2026")]:
         state.set_fecha_entrega(raw)
         assert state.fecha_entrega == expected
-    year = datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).year
     state.complete_delivery_date("1910")
-    assert state.fecha_entrega == f"19-10-{year}"
+    assert state.fecha_entrega == "19-10"
     state.complete_delivery_date("19102026")
     assert state.fecha_entrega == "19-10-2026"
     state.complete_delivery_date("191")
@@ -72,6 +71,23 @@ def test_delivery_date_adds_separators_and_raw_blur_does_not_remove_them():
     assert state.fecha_entrega == "31-13"
     state.set_fecha_entrega("")
     assert state.fecha_entrega == ""
+
+
+def test_delivery_date_can_be_erased_and_retyped_without_autocompleting():
+    state = _state()
+    for value in ("18-10-2026", "18-10-202", "18-10-20", "18-10-2", "18-10",
+                  "18-1", "18", "1", ""):
+        state.set_fecha_entrega(value)
+        assert state.fecha_entrega == value
+        state.complete_delivery_date(value)
+        assert state.fecha_entrega == value
+    for raw, expected in [("1", "1"), ("18", "18"), ("181", "18-1"), ("1810", "18-10")]:
+        state.set_fecha_entrega(raw)
+        assert state.fecha_entrega == expected
+    state.complete_delivery_date("1810")
+    assert state.fecha_entrega == "18-10"
+    year = datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).year
+    assert _parse_delivery_date(state.fecha_entrega) == date(year, 10, 18)
 
 
 def test_delivery_date_accepts_compact_form_values_before_change_event_finishes():
