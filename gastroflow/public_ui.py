@@ -577,6 +577,8 @@ def cart_view() -> rx.Component:
                             rx.input(
                                 value=PublicOrderState.fecha_entrega,
                                 name="fecha_entrega",
+                                type="text",
+                                debounce_timeout=0,
                                 on_change=PublicOrderState.set_fecha_entrega,
                                 on_blur=PublicOrderState.complete_delivery_date,
                                 placeholder="DD-MM (año opcional)",

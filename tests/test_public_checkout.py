@@ -55,6 +55,34 @@ def test_optional_year_and_minutes():
         _parse_delivery_date("31/02")
 
 
+def test_delivery_date_adds_separators_and_raw_blur_does_not_remove_them():
+    state = _state()
+    for raw, expected in [("1", "1"), ("19", "19"), ("191", "19-1"), ("1910", "19-10"),
+                          ("19102", "19-10-2"), ("19102026", "19-10-2026")]:
+        state.set_fecha_entrega(raw)
+        assert state.fecha_entrega == expected
+    year = datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).year
+    state.complete_delivery_date("1910")
+    assert state.fecha_entrega == f"19-10-{year}"
+    state.complete_delivery_date("19102026")
+    assert state.fecha_entrega == "19-10-2026"
+    state.complete_delivery_date("191")
+    assert state.fecha_entrega == "19-1"
+    state.complete_delivery_date("3113")
+    assert state.fecha_entrega == "31-13"
+    state.set_fecha_entrega("")
+    assert state.fecha_entrega == ""
+
+
+def test_delivery_date_accepts_compact_form_values_before_change_event_finishes():
+    year = datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).year
+    assert _parse_delivery_date("1910") == date(year, 10, 19)
+    assert _parse_delivery_date("19102026") == date(2026, 10, 19)
+    assert _parse_delivery_date("2026-10-19") == date(2026, 10, 19)
+    with pytest.raises(ValueError):
+        _parse_delivery_date("3113")
+
+
 def test_business_text_preserves_display_casing_and_media_urls():
     engine = create_engine("sqlite://")
     Categoria.__table__.create(engine)

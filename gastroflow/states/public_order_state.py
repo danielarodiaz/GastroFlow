@@ -83,6 +83,9 @@ def _normalize_upload_path(value: str | None) -> str:
 
 def _parse_delivery_date(value: str) -> date:
     clean = value.strip()
+    # Blur/form events may arrive with the raw digits before the masked state.
+    if clean.isdigit() and len(clean) in {4, 8}:
+        clean = _mask_date(clean)
     if "-" in clean and len(clean.split("-")[0]) == 4:
         return date.fromisoformat(clean)
     parts = clean.replace("/", "-").split("-")
@@ -520,7 +523,7 @@ class PublicOrderState(rx.State):
         try:
             self.fecha_entrega = _date_text(_parse_delivery_date(value))
         except ValueError:
-            self.fecha_entrega = value
+            self.fecha_entrega = _mask_date(value)
 
     def complete_delivery_time(self, value: str) -> None:
         try:
