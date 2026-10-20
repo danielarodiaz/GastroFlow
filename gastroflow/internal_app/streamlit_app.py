@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
+import hmac
 import json
 import mimetypes
+import time as time_module
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from typing import Any
@@ -14,6 +19,7 @@ from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from gastroflow.data.database import engine
+from gastroflow.config.settings import get_settings
 from gastroflow.domain.enums import EstadoPedido, RolUsuario, TipoPromocion, UnidadVenta
 from gastroflow.domain.errors import DomainError
 from gastroflow.domain.order_state import valid_next_states
@@ -33,6 +39,7 @@ from gastroflow.models import (
     PromocionCategoria,
     PromocionItem,
     PromocionProducto,
+    Usuario,
     UsuarioRead,
     ZonaEnvio,
 )
@@ -49,6 +56,14 @@ from gastroflow.services.media_storage import save_media_bytes
 from gastroflow.services.promotions import configure_promotion
 
 BRAND_LOGO_CONFIG_KEY = "brand.logo_url"
+ACTIVE_ORDER_STATES = {
+    EstadoPedido.PEDIDO.value,
+    EstadoPedido.PENDIENTE_CONFIRMACION.value,
+    EstadoPedido.EN_PROCESO.value,
+}
+AUTH_QUERY_PARAM = "session"
+AUTH_SESSION_SECONDS = 60 * 60 * 12
+ORDER_REFRESH_INTERVAL = "5s"
 
 
 def main() -> None:
@@ -59,6 +74,7 @@ def main() -> None:
         initial_sidebar_state="expanded",
     )
     _init_session_state()
+    _restore_authentication()
     _render_sidebar()
     if not _is_authenticated():
         _render_login()
@@ -85,6 +101,7 @@ def _init_session_state() -> None:
         "internal_page": "Pedidos",
         "auth_message": "",
         "selected_order_id": None,
+        "show_delivered_orders": False,
         "selected_expense_id": None,
         "expense_ticket_items": [],
     }
@@ -126,6 +143,7 @@ def _render_login() -> None:
             st.session_state.username = user.username
             st.session_state.role = user.rol.value
             st.session_state.auth_message = ""
+            _persist_authentication(user.id)
             st.rerun()
         except DomainError as exc:
             st.session_state.auth_message = str(exc)
@@ -135,7 +153,24 @@ def _render_login() -> None:
 
 def _render_orders() -> None:
     st.title("Pedidos")
-    orders = _load_order_rows()
+    if st.session_state.show_delivered_orders:
+        if st.button("← Volver a pedidos activos"):
+            st.session_state.show_delivered_orders = False
+            st.rerun()
+        _render_delivered_orders()
+        return
+
+    action_cols = st.columns([1, 3])
+    if action_cols[0].button("Ver mis pedidos", use_container_width=True):
+        st.session_state.show_delivered_orders = True
+        st.rerun()
+    action_cols[1].caption("La pantalla se actualiza automáticamente cada 5 segundos.")
+    _render_live_orders()
+
+
+@st.fragment(run_every=ORDER_REFRESH_INTERVAL)
+def _render_live_orders() -> None:
+    orders = [row for row in _load_order_rows() if row["estado"] in ACTIVE_ORDER_STATES]
     metric_cols = st.columns(4)
     total_amount = sum((row["monto_total"] for row in orders), Decimal("0.00"))
     metric_cols[0].metric("Pedidos", len(orders))
@@ -149,7 +184,7 @@ def _render_orders() -> None:
     _render_production_summary(orders)
 
     if not orders:
-        st.info("Todavia no hay pedidos.")
+        st.info("No hay pedidos activos en este momento.")
         return
 
     for row in orders:
@@ -181,7 +216,180 @@ def _render_orders() -> None:
                     ):
                         _transition_order(row["id"], next_state)
                         _load_order_rows.clear()
-                        st.rerun()
+                        st.rerun(scope="fragment")
+
+
+def _render_delivered_orders() -> None:
+    st.subheader("Mis pedidos entregados")
+    delivered = [
+        row for row in _load_order_rows()
+        if row["estado"] == EstadoPedido.ENTREGADO.value
+    ]
+    delivered.sort(
+        key=lambda row: (
+            row["fecha_entrega_raw"],
+            row["horario_entrega_raw"] or time.min,
+            row["id"],
+        ),
+        reverse=True,
+    )
+    if not delivered:
+        st.info("Todavía no hay pedidos entregados.")
+        return
+
+    month_options = _month_filter_options(delivered)
+    filter_cols = st.columns(3)
+    selected_month = filter_cols[0].selectbox(
+        "Mes",
+        list(month_options),
+        format_func=lambda value: month_options[value],
+    )
+    selected_dates = filter_cols[1].date_input(
+        "Rango de fecha (desde / hasta)",
+        value=(),
+        format="DD/MM/YYYY",
+    )
+    categories = sorted({item["categoria"] for row in delivered for item in row["items"]})
+    products = sorted({
+        product
+        for row in delivered
+        for item in row["items"]
+        for product in (item["producto"], item["combo"])
+        if product
+    })
+    clients = sorted({row["cliente"] for row in delivered})
+    zones = sorted({row["zona"] for row in delivered})
+    category = filter_cols[2].selectbox("Categoría", ["Todos", *categories])
+    filter_cols_2 = st.columns(3)
+    product = filter_cols_2[0].selectbox("Producto", ["Todos", *products])
+    client = filter_cols_2[1].selectbox("Cliente", ["Todos", *clients])
+    zone = filter_cols_2[2].selectbox("Zona", ["Todos", *zones])
+
+    date_from, date_to = _normalize_date_range(selected_dates)
+    filtered = _filter_delivered_orders(
+        delivered,
+        month=selected_month,
+        date_from=date_from,
+        date_to=date_to,
+        category=category,
+        product=product,
+        client=client,
+        zone=zone,
+    )
+    st.caption(f"{len(filtered)} pedidos encontrados")
+    if not filtered:
+        st.warning("No hay pedidos que coincidan con los filtros seleccionados.")
+        return
+    st.dataframe(
+        _delivered_order_table_rows(filtered),
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "Total": st.column_config.NumberColumn(format="$ %.2f"),
+            "Envío": st.column_config.NumberColumn(format="$ %.2f"),
+            "Precio unitario": st.column_config.NumberColumn(format="$ %.2f"),
+            "Subtotal": st.column_config.NumberColumn(format="$ %.2f"),
+        },
+    )
+
+
+def _month_filter_options(orders: list[dict[str, Any]]) -> dict[str, str]:
+    month_names = (
+        "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+        "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+    )
+    months = sorted(
+        {row["fecha_entrega_raw"].strftime("%Y-%m") for row in orders},
+        reverse=True,
+    )
+    options = {"Todos": "Todos"}
+    for value in months:
+        year, month = (int(part) for part in value.split("-"))
+        options[value] = f"{month_names[month - 1]} {year}"
+    return options
+
+
+def _normalize_date_range(value: Any) -> tuple[date | None, date | None]:
+    if isinstance(value, date):
+        return value, value
+    if isinstance(value, (tuple, list)):
+        if len(value) == 1:
+            return value[0], value[0]
+        if len(value) >= 2:
+            return value[0], value[1]
+    return None, None
+
+
+def _filter_delivered_orders(
+    orders: list[dict[str, Any]],
+    *,
+    month: str = "Todos",
+    date_from: date | None = None,
+    date_to: date | None = None,
+    category: str = "Todos",
+    product: str = "Todos",
+    client: str = "Todos",
+    zone: str = "Todos",
+) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    for order in orders:
+        delivery_date = order["fecha_entrega_raw"]
+        if order["estado"] != EstadoPedido.ENTREGADO.value:
+            continue
+        if month != "Todos" and delivery_date.strftime("%Y-%m") != month:
+            continue
+        if date_from is not None and delivery_date < date_from:
+            continue
+        if date_to is not None and delivery_date > date_to:
+            continue
+        if client != "Todos" and order["cliente"] != client:
+            continue
+        if zone != "Todos" and order["zona"] != zone:
+            continue
+        if category != "Todos" or product != "Todos":
+            matches_item = any(
+                (category == "Todos" or item["categoria"] == category)
+                and (
+                    product == "Todos"
+                    or item["producto"] == product
+                    or item["combo"] == product
+                )
+                for item in order["items"]
+            )
+            if not matches_item:
+                continue
+        filtered.append(order)
+    return filtered
+
+
+def _delivered_order_table_rows(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for order in orders:
+        items = order["items"] or [{}]
+        for item in items:
+            rows.append({
+                "Código": order["codigo"],
+                "Fecha": order["fecha_entrega"],
+                "Hora": order["horario_entrega"],
+                "Cliente": order["cliente"],
+                "Teléfono": order["telefono"],
+                "Categoría": item.get("categoria", ""),
+                "Producto": item.get("producto", ""),
+                "Combinación": item.get("combo", ""),
+                "Cantidad": item.get("cantidad", ""),
+                "Precio unitario": item.get("precio_unitario_raw"),
+                "Subtotal": item.get("subtotal_raw"),
+                "Dirección": order["direccion"],
+                "Zona": order["zona"],
+                "Envío": order["costo_envio"],
+                "Forma de pago": order["forma_pago"].replace("_", " ").title(),
+                "Total": order["monto_total"],
+                "Observaciones": order["observaciones"],
+                "Pedido especial": "Sí" if item.get("pedido_especial") else "No",
+                "Estado": "Entregado",
+                "Creado": _format_display_value(order["creado"]),
+            })
+    return rows
 
 
 def _render_production_summary(orders: list[dict[str, Any]]) -> None:
@@ -802,7 +1010,7 @@ def _render_placeholder(title: str) -> None:
     st.info("Seccion preparada. Se conectara a los servicios compartidos en la siguiente fase.")
 
 
-@st.cache_data(ttl=15, show_spinner=False)
+@st.cache_data(ttl=4, show_spinner=False)
 def _load_order_rows() -> list[dict[str, Any]]:
     combo_product = aliased(Producto)
     with Session(engine) as session:
@@ -833,11 +1041,13 @@ def _load_order_rows() -> list[dict[str, Any]]:
             "cliente": cliente.nombre_apellido,
             "telefono": cliente.telefono,
             "estado": pedido.estado.value,
+            "forma_pago": pedido.forma_pago.value,
             "direccion": pedido.direccion_delivery,
             "zona": zona.nombre if zona else "Sin envio",
             "costo_envio": pedido.costo_envio,
             "monto_total": pedido.monto_total,
             "observaciones": pedido.observaciones or "",
+            "creado": pedido.created_at,
             "items": [],
             "es_especial": False,
         }
@@ -852,6 +1062,8 @@ def _load_order_rows() -> list[dict[str, Any]]:
                 "combo": combo.nombre if combo else "",
                 "categoria": category.nombre,
                 "cantidad": item.cantidad,
+                "precio_unitario_raw": item.precio_unitario,
+                "subtotal_raw": item.subtotal,
                 "precio_unitario": _money_text(item.precio_unitario),
                 "subtotal": _money_text(item.subtotal),
                 "pedido_especial": item.es_especial,
@@ -1181,6 +1393,73 @@ def _current_user() -> UsuarioRead:
     )
 
 
+def _create_auth_token(
+    user_id: int,
+    *,
+    now: int | None = None,
+    secret: str | None = None,
+) -> str:
+    expires_at = (now if now is not None else int(time_module.time())) + AUTH_SESSION_SECONDS
+    payload = f"{user_id}:{expires_at}".encode("utf-8")
+    encoded_payload = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    signing_secret = (secret or get_settings().app_secret_key).encode("utf-8")
+    signature = hmac.new(signing_secret, encoded_payload.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{encoded_payload}.{signature}"
+
+
+def _decode_auth_token(
+    token: str,
+    *,
+    now: int | None = None,
+    secret: str | None = None,
+) -> int | None:
+    try:
+        encoded_payload, signature = token.split(".", 1)
+        signing_secret = (secret or get_settings().app_secret_key).encode("utf-8")
+        expected_signature = hmac.new(
+            signing_secret,
+            encoded_payload.encode("ascii"),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected_signature):
+            return None
+        padding = "=" * (-len(encoded_payload) % 4)
+        user_id_text, expires_at_text = base64.urlsafe_b64decode(
+            encoded_payload + padding
+        ).decode("utf-8").split(":", 1)
+        user_id = int(user_id_text)
+        expires_at = int(expires_at_text)
+        current_time = now if now is not None else int(time_module.time())
+        if user_id <= 0 or expires_at <= current_time:
+            return None
+        return user_id
+    except (binascii.Error, TypeError, ValueError, UnicodeDecodeError):
+        return None
+
+
+def _persist_authentication(user_id: int) -> None:
+    st.query_params[AUTH_QUERY_PARAM] = _create_auth_token(user_id)
+
+
+def _restore_authentication() -> None:
+    if _is_authenticated():
+        return
+    token = st.query_params.get(AUTH_QUERY_PARAM, "")
+    user_id = _decode_auth_token(token) if token else None
+    if user_id is None:
+        if token:
+            st.query_params.pop(AUTH_QUERY_PARAM, None)
+        return
+    with Session(engine) as session:
+        user = session.get(Usuario, user_id)
+    if user is None:
+        st.query_params.pop(AUTH_QUERY_PARAM, None)
+        return
+    st.session_state.user_id = user.id or 0
+    st.session_state.username = user.username
+    st.session_state.role = user.rol.value
+
+
 def _is_authenticated() -> bool:
     return int(st.session_state.get("user_id") or 0) > 0
 
@@ -1194,6 +1473,8 @@ def _logout() -> None:
     st.session_state.username = ""
     st.session_state.role = ""
     st.session_state.auth_message = ""
+    st.session_state.show_delivered_orders = False
+    st.query_params.pop(AUTH_QUERY_PARAM, None)
 
 
 def _money_text(value: Decimal | str | int | float) -> str:
