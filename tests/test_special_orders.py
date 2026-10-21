@@ -105,7 +105,7 @@ def test_events_minimum_includes_regular_and_special_pizzas_only_in_events(speci
         assert service._price_items(items)[0].precio_unitario == Decimal("6500")
 
 
-def test_special_keeps_its_category_price_instead_of_promos_or_wholesale(specials):
+def test_special_uses_applicable_tariff_without_regular_promotions(specials):
     session, ids, products, _ = specials
     promo = Promocion(codigo="SPECIAL_TEST", nombre="No aplicar", tipo=TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
         cantidad_minima=2, precio_unitario_promocional=Decimal("1"))
@@ -116,11 +116,76 @@ def test_special_keeps_its_category_price_instead_of_promos_or_wholesale(special
     session.commit()
     for quantity in (2, 10):
         line = OrderService(session)._price_items([OrderItemInput(products["Fugazzetta"].id, quantity)])[0]
-        assert line.categoria_venta_id == ids["lista_horno"]
-        assert line.precio_unitario == Decimal("7500")
-        assert line.es_especial
+        assert line.categoria_venta_id == ids["lista_horno" if quantity == 2 else "mayorista"]
+        assert line.precio_unitario == Decimal("7500" if quantity == 2 else "5500")
+        assert line.es_especial and line.requiere_confirmacion
     with pytest.raises(ValidationError, match="pertenecer"):
         configure_promotion(session, promo, [ids["lista_horno"]], [products["Fugazzetta"].id], [])
+
+
+def test_twenty_pizza_order_applies_wholesale_to_all_five_flavors_and_stays_pending(specials):
+    session, ids, products, state = specials
+    flavors = ["Muzzarella", "Especial", "Calabresa", "Fugazzetta", "Napolitana"]
+    items = [OrderItemInput(products[name].id, 4, contexto_origen="LISTA_HORNO") for name in flavors]
+    service = OrderService(session)
+    priced = service._price_items(items)
+    assert [line.precio_unitario for line in priced] == [Decimal(price) for price in (4500, 6000, 6500, 5500, 7000)]
+    assert all(line.categoria_venta_codigo == "MAYORISTA" for line in priced)
+    assert [line.es_especial for line in priced] == [False, False, False, True, True]
+    state.cart = [{"producto_id": products[name].id, "nombre": name, "cantidad": 4,
+        "categoria": "Lista para hornear", "categoria_codigo": "LISTA_HORNO",
+        "precio": str(next(product["precio"] for product in state.products
+                           if product["id"] == products[name].id and product["categoria_id"] == ids["lista_horno"]))}
+        for name in flavors]
+    asyncio.run(state._refresh_cart_total())
+    assert not state.technical_error
+    assert state.cart_total == "118000.00"
+    assert all(line["categoria_display"] == "Lista para hornear / Mayorista" for line in state.cart)
+    assert state.cart_has_special_orders
+    assert [line["es_especial"] for line in state.cart] == [False, False, False, True, True]
+    result = service.create_public_order(_payload(items))
+    assert result.es_especial
+    assert result.pedido.estado == EstadoPedido.PENDIENTE_CONFIRMACION
+    assert result.pedido.monto_total == Decimal("118000")
+    saved = session.exec(select(PedidoItem).order_by(PedidoItem.id)).all()
+    assert all(line.categoria_venta_id == ids["mayorista"] for line in saved)
+    assert [line.es_especial for line in saved] == [False, False, False, True, True]
+
+
+@pytest.mark.parametrize("regular_quantity", [5, 6])
+def test_special_units_count_for_wholesale_threshold(specials, regular_quantity):
+    session, ids, products, _ = specials
+    priced = OrderService(session)._price_items([
+        OrderItemInput(products["Muzzarella"].id, regular_quantity),
+        OrderItemInput(products["Fugazzetta"].id, 4),
+    ])
+    wholesale = regular_quantity == 6
+    assert all(line.categoria_venta_id == ids["mayorista" if wholesale else "lista_horno"] for line in priced)
+    assert priced[1].precio_unitario == Decimal("5500" if wholesale else "7500")
+    assert priced[1].es_especial and priced[1].requiere_confirmacion
+
+
+def test_special_half_pizza_uses_both_wholesale_prices_and_keeps_availability_pending(specials):
+    session, ids, products, _ = specials
+    line = OrderService(session)._price_items([OrderItemInput(
+        products["Muzzarella"].id, 10, products["Fugazzetta"].id, "LISTA_HORNO",
+    )])[0]
+    assert line.precio_unitario == Decimal("5000")
+    assert line.subtotal == Decimal("50000")
+    assert line.categoria_venta_id == ids["mayorista"]
+    assert line.es_especial and line.requiere_confirmacion
+
+
+def test_missing_wholesale_price_never_silently_uses_regular_price_for_special(specials):
+    session, ids, products, _ = specials
+    relation = session.exec(select(ProductoCategoria).where(
+        ProductoCategoria.producto_id == products["Fugazzetta"].id,
+        ProductoCategoria.categoria_id == ids["mayorista"],
+    )).one()
+    session.delete(relation)
+    session.commit()
+    with pytest.raises(ValidationError, match="precio configurado"):
+        OrderService(session)._price_items([OrderItemInput(products["Fugazzetta"].id, 10)])
 
 
 def test_mixed_order_is_pending_until_accepted_and_snapshot_survives_catalog_changes(specials, monkeypatch):
@@ -174,9 +239,13 @@ def test_staff_interface_accepts_availability_before_preparation(specials, monke
     monkeypatch.setattr(internal, "engine", session.get_bind())
     monkeypatch.setattr(internal, "_current_user", lambda: SimpleNamespace(rol=RolUsuario.DUENO))
     internal._load_order_rows.clear()
+    # AppTest reruns the full script rather than issuing fragment-only reruns.
+    rerun = internal.st.rerun
+    monkeypatch.setattr(internal.st, "rerun", lambda **kwargs: rerun())
 
     def page():
-        from gastroflow.internal_app.streamlit_app import _render_orders
+        from gastroflow.internal_app.streamlit_app import _init_session_state, _render_orders
+        _init_session_state()
         _render_orders()
 
     app = AppTest.from_function(page, default_timeout=10).run()

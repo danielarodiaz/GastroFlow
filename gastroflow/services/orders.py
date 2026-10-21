@@ -304,9 +304,8 @@ class OrderService:
                 raise ValidationError("La cantidad debe ser mayor a cero.")
             product = products[item.producto_id]
             special = special_by_index[index]
-            line_category = origin_category if special else sale_category
-            line_prices = {product_id: relation.precio for product_id, relation in origin_relations.items()} if special else category_prices
-            base_price = self._item_base_price(product.id or 0, line_prices, is_combo=False)
+            # Availability approval is independent from the applicable sales tariff.
+            base_price = self._item_base_price(product.id or 0, category_prices, is_combo=False)
 
             requires_confirmation = special
             unit_price = self._money(base_price)
@@ -321,7 +320,7 @@ class OrderService:
             if item.producto_combo_id is not None:
                 self._validate_combo_origin(item, origin_category)
                 combo_product = products[item.producto_combo_id]
-                combo_base_price = self._item_base_price(combo_product.id or 0, line_prices, is_combo=True)
+                combo_base_price = self._item_base_price(combo_product.id or 0, category_prices, is_combo=True)
                 combo_rule = self._get_combo_rule(product.id or 0, combo_product.id or 0)
                 unit_price = self._money(self._combo_price(combo_rule, base_price, combo_base_price))
                 subtotal = unit_price * item.cantidad
@@ -333,10 +332,10 @@ class OrderService:
                 PricedItem(
                     item=item,
                     precio_unitario=unit_price,
-                    categoria_venta_id=line_category.id or 0,
+                    categoria_venta_id=sale_category.id or 0,
                     subtotal=self._money(subtotal),
                     requiere_confirmacion=requires_confirmation,
-                    categoria_venta_codigo=line_category.codigo,
+                    categoria_venta_codigo=sale_category.codigo,
                     precio_base=base_price,
                     es_especial=special,
                 )

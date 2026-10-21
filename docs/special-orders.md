@@ -21,10 +21,16 @@ no se muestran alias ni instrucciones para realizar transferencias.
 Eventos mantiene el mínimo de 10 unidades sumando todos sus productos,
 habituales y especiales. Los productos de otras categorías no cuentan.
 
-Los especiales conservan el precio de su categoría de origen: no reciben
-promociones ni se trasladan automáticamente a la tarifa Mayorista. Las pizzas
-de Horno siguen contando como unidades completas para el umbral de su categoría;
-los productos habituales mantienen sus reglas de precio existentes.
+Los especiales utilizan la tarifa que corresponde al pedido. Si Horno alcanza
+el mínimo Mayorista, todos sus renglones usan los precios configurados en
+Mayorista, incluidos Fugazzetta y Napolitana. Cada producto debe tener un precio
+activo en esa categoría. Mitad y mitad usa el promedio de ambos precios
+mayoristas. Las unidades habituales y especiales de Horno cuentan juntas para
+ese umbral. Eventos conserva sus propios precios y su mínimo independiente.
+
+El check por encargo controla la disponibilidad y mantiene pendiente la
+aceptación; no excluye la tarifa Mayorista. Los especiales siguen fuera de las
+promociones comunes y de los paquetes combinados.
 
 ## Gestión interna
 
