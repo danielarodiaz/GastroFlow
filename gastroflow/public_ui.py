@@ -562,7 +562,7 @@ def cart_view() -> rx.Component:
                     panel(
                         rx.heading("Confirmar pedido", size="6", font_family=FONT_STACK, color=GREEN),
                         rx.cond(PublicOrderState.cart_has_special_orders,
-                            rx.text("Tu pedido incluye productos por encargo. El pedido completo queda pendiente de aceptación de disponibilidad. El precio es definitivo; esperá la aceptación antes de pagar.", color=RED, font_weight="900", role="status"),
+                            rx.text("Tu pedido incluye productos por encargo. El pedido completo queda pendiente de aceptación de disponibilidad. Esperá la aceptación antes de pagar.", color=RED, font_weight="900", role="status"),
                             rx.fragment()),
                         field(
                             "Nombre y apellido",
