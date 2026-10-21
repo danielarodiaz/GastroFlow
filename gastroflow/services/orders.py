@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, time
 from decimal import Decimal
 from urllib.parse import quote
@@ -12,11 +12,15 @@ from gastroflow.domain.enums import EstadoPedido, FormaPago, ReglaPrecioCombo, T
 from gastroflow.domain.errors import ValidationError
 from gastroflow.domain.order_state import assert_valid_order_transition
 from gastroflow.models import (
+    Agregado,
+    AgregadoCategoria,
     Categoria,
     Cliente,
     ComboRegla,
     Pedido,
     PedidoItem,
+    PedidoItemAgregado,
+    PedidoPago,
     PedidoRead,
     Producto,
     ProductoCategoria,
@@ -40,11 +44,24 @@ WHOLESALE_ELIGIBLE_CONTEXTS = frozenset({DEFAULT_CONTEXT_CODE})
 
 
 @dataclass(frozen=True)
+class OrderAddonInput:
+    agregado_id: int
+    cantidad: int = 1
+
+
+@dataclass(frozen=True)
 class OrderItemInput:
     producto_id: int
     cantidad: int
     producto_combo_id: int | None = None
     contexto_origen: str | None = None
+    agregados: tuple[OrderAddonInput, ...] = ()
+
+
+@dataclass(frozen=True)
+class OrderPaymentInput:
+    forma_pago: FormaPago
+    monto: Decimal
 
 
 @dataclass(frozen=True)
@@ -62,6 +79,7 @@ class PublicOrderInput:
     observaciones: str | None = None
     contexto_origen: str = DEFAULT_CONTEXT_CODE
     submission_token: str | None = None
+    pagos: tuple[OrderPaymentInput, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -82,6 +100,22 @@ class PricedItem:
     precio_base: Decimal | None = None
     promocion_nombre: str = ""
     es_especial: bool = False
+    agregados: tuple["PricedAddon", ...] = ()
+
+    @property
+    def total(self) -> Decimal:
+        return self.subtotal + sum(
+            (agregado.subtotal for agregado in self.agregados), Decimal("0.00")
+        )
+
+
+@dataclass(frozen=True)
+class PricedAddon:
+    agregado_id: int
+    nombre: str
+    cantidad: int
+    precio_unitario: Decimal
+    subtotal: Decimal
 
 
 @dataclass(frozen=True)
@@ -115,8 +149,9 @@ class OrderService:
         codigo = next_business_code(self.session, "pedido_codigo_seq", "PED")
         costo_envio = self._snapshot_delivery_cost(data.zona_envio_id)
         priced_items = self._price_items(data.items, data.contexto_origen)
-        monto_items = sum((priced_item.subtotal for priced_item in priced_items), Decimal("0"))
+        monto_items = sum((priced_item.total for priced_item in priced_items), Decimal("0"))
         monto_total = self._money(monto_items + costo_envio)
+        payments = self._validated_payments(data, monto_total)
         requires_confirmation = any(item.requiere_confirmacion for item in priced_items)
         estado = (
             EstadoPedido.PENDIENTE_CONFIRMACION
@@ -135,7 +170,7 @@ class OrderService:
             direccion_lng=data.direccion_lng,
             zona_envio_id=data.zona_envio_id,
             costo_envio=costo_envio,
-            forma_pago=data.forma_pago,
+            forma_pago=(payments[0].forma_pago if len(payments) == 1 else FormaPago.MIXTO),
             estado=estado,
             observaciones=data.observaciones,
             monto_total=monto_total,
@@ -144,18 +179,34 @@ class OrderService:
         self.session.flush()
 
         for priced_item in priced_items:
-            self.session.add(
-                PedidoItem(
-                    pedido_id=pedido.id or 0,
-                    producto_id=priced_item.item.producto_id,
-                    producto_combo_id=priced_item.item.producto_combo_id,
-                    categoria_venta_id=priced_item.categoria_venta_id,
-                    cantidad=priced_item.item.cantidad,
-                    precio_unitario=priced_item.precio_unitario,
-                    subtotal=priced_item.subtotal,
-                    es_especial=priced_item.es_especial,
-                )
+            pedido_item = PedidoItem(
+                pedido_id=pedido.id or 0,
+                producto_id=priced_item.item.producto_id,
+                producto_combo_id=priced_item.item.producto_combo_id,
+                categoria_venta_id=priced_item.categoria_venta_id,
+                cantidad=priced_item.item.cantidad,
+                precio_unitario=priced_item.precio_unitario,
+                subtotal=priced_item.subtotal,
+                es_especial=priced_item.es_especial,
             )
+            self.session.add(pedido_item)
+            self.session.flush()
+            for agregado in priced_item.agregados:
+                self.session.add(PedidoItemAgregado(
+                    pedido_item_id=pedido_item.id or 0,
+                    agregado_id=agregado.agregado_id,
+                    agregado_nombre=agregado.nombre,
+                    cantidad=agregado.cantidad,
+                    precio_unitario=agregado.precio_unitario,
+                    subtotal=agregado.subtotal,
+                ))
+
+        for payment in payments:
+            self.session.add(PedidoPago(
+                pedido_id=pedido.id or 0,
+                forma_pago=payment.forma_pago,
+                monto=payment.monto,
+            ))
 
         self.session.commit()
         self.session.refresh(pedido)
@@ -227,7 +278,77 @@ class OrderService:
 
         priced = self._price_context_items(items, contexto_origen, enforce_event_minimum=enforce_event_minimum)
         contexts = [item.contexto_origen or contexto_origen for item in items]
-        return apply_package_promotions(self.session, priced, contexts)
+        promoted = apply_package_promotions(self.session, priced, contexts)
+        return [
+            replace(
+                priced_item,
+                agregados=self._price_addons(
+                    priced_item.item.agregados,
+                    priced_item.categoria_venta_id,
+                ),
+            )
+            for priced_item in promoted
+        ]
+
+    def _price_addons(
+        self,
+        addon_inputs: tuple[OrderAddonInput, ...],
+        category_id: int,
+    ) -> tuple[PricedAddon, ...]:
+        if not addon_inputs:
+            return ()
+        quantities: dict[int, int] = {}
+        for addon_input in addon_inputs:
+            if addon_input.cantidad <= 0:
+                raise ValidationError("La cantidad del agregado debe ser mayor a cero.")
+            quantities[addon_input.agregado_id] = (
+                quantities.get(addon_input.agregado_id, 0) + addon_input.cantidad
+            )
+        addons = self.session.exec(
+            select(Agregado)
+            .join(AgregadoCategoria, AgregadoCategoria.agregado_id == Agregado.id)
+            .where(
+                Agregado.id.in_(quantities),
+                Agregado.activo == True,
+                AgregadoCategoria.categoria_id == category_id,
+            )
+        ).all()
+        by_id = {addon.id or 0: addon for addon in addons}
+        missing = set(quantities) - set(by_id)
+        if missing:
+            raise ValidationError("Uno de los agregados no está disponible para esta categoría.")
+        return tuple(
+            PricedAddon(
+                agregado_id=addon_id,
+                nombre=by_id[addon_id].nombre,
+                cantidad=quantity,
+                precio_unitario=self._money(by_id[addon_id].precio),
+                subtotal=self._money(by_id[addon_id].precio * quantity),
+            )
+            for addon_id, quantity in quantities.items()
+        )
+
+    def _validated_payments(
+        self,
+        data: PublicOrderInput,
+        order_total: Decimal,
+    ) -> tuple[OrderPaymentInput, ...]:
+        raw = data.pagos or (OrderPaymentInput(data.forma_pago, order_total),)
+        amounts: dict[FormaPago, Decimal] = {}
+        for payment in raw:
+            if payment.forma_pago == FormaPago.MIXTO:
+                raise ValidationError("Detalla los importes de efectivo y transferencia.")
+            amount = self._money(payment.monto)
+            if amount <= 0:
+                raise ValidationError("Los importes de pago deben ser mayores a cero.")
+            amounts[payment.forma_pago] = amounts.get(payment.forma_pago, Decimal("0")) + amount
+        payments = tuple(
+            OrderPaymentInput(payment_type, self._money(amount))
+            for payment_type, amount in amounts.items()
+        )
+        if self._money(sum((payment.monto for payment in payments), Decimal("0"))) != order_total:
+            raise ValidationError("La suma de los pagos debe coincidir con el total del pedido.")
+        return payments
 
     def _price_context_items(
         self,

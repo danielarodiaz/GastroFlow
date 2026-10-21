@@ -8,6 +8,8 @@ from sqlmodel import Session, SQLModel, select
 
 from gastroflow.domain.errors import ValidationError
 from gastroflow.models import (
+    Agregado,
+    AgregadoCategoria,
     Categoria,
     Cliente,
     ComboRegla,
@@ -17,6 +19,8 @@ from gastroflow.models import (
     MotivoGasto,
     Pedido,
     PedidoItem,
+    PedidoItemAgregado,
+    PedidoPago,
     Producto,
     ProductoCategoria,
     Promocion,
@@ -40,6 +44,8 @@ class TableConfig:
 
 
 CRUD_TABLES: dict[str, TableConfig] = {
+    "agregado": TableConfig(Agregado),
+    "agregado_categoria": TableConfig(AgregadoCategoria),
     "categoria": TableConfig(Categoria),
     "producto": TableConfig(Producto),
     "producto_categoria": TableConfig(ProductoCategoria),
@@ -55,6 +61,8 @@ CRUD_TABLES: dict[str, TableConfig] = {
     "cliente": TableConfig(Cliente),
     "pedido": TableConfig(Pedido),
     "pedido_item": TableConfig(PedidoItem),
+    "pedido_item_agregado": TableConfig(PedidoItemAgregado),
+    "pedido_pago": TableConfig(PedidoPago),
     "gasto": TableConfig(Gasto),
     "gasto_detalle": TableConfig(GastoDetalle),
 }
@@ -115,6 +123,27 @@ class AdminCrudService:
         AuthService(self.session).require_admin(current_user)
         config = self._config(table_name)
         record = self._get_existing(config, record_id)
+        if table_name == "pedido":
+            # A hard delete is deliberately exceptional. Remove dependent
+            # snapshots first, while the business-code sequence remains
+            # untouched so the deleted number can never be reused.
+            items = self.session.exec(
+                select(PedidoItem).where(PedidoItem.pedido_id == record_id)
+            ).all()
+            item_ids = [item.id for item in items if item.id is not None]
+            if item_ids:
+                for addon in self.session.exec(
+                    select(PedidoItemAgregado).where(
+                        PedidoItemAgregado.pedido_item_id.in_(item_ids)
+                    )
+                ).all():
+                    self.session.delete(addon)
+            for payment in self.session.exec(
+                select(PedidoPago).where(PedidoPago.pedido_id == record_id)
+            ).all():
+                self.session.delete(payment)
+            for item in items:
+                self.session.delete(item)
         self.session.delete(record)
         self.session.commit()
 

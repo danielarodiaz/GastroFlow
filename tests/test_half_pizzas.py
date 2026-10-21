@@ -10,7 +10,7 @@ from sqlmodel import select
 
 from gastroflow.domain.enums import FormaPago, ReglaPrecioCombo, TipoPromocion, UnidadVenta
 from gastroflow.domain.errors import ValidationError
-from gastroflow.models import Categoria, Cliente, ComboRegla, Pedido, PedidoItem, Producto, ProductoCategoria, Promocion, PromocionCategoria, PromocionProducto, ZonaEnvio
+from gastroflow.models import Agregado, AgregadoCategoria, Categoria, Cliente, ComboRegla, Pedido, PedidoItem, PedidoItemAgregado, PedidoPago, Producto, ProductoCategoria, Promocion, PromocionCategoria, PromocionProducto, ZonaEnvio
 from gastroflow.services.combo_rules import HALF_PIZZA_FLAVORS, ensure_half_pizza_rules
 from gastroflow.services.orders import OrderItemInput, OrderService, PublicOrderInput
 from gastroflow.services.public_catalog import brand_cache, catalog_cache
@@ -40,6 +40,8 @@ def pizzas(monkeypatch):
         ensure_half_pizza_rules(session)
         session.commit()
         ZonaEnvio.__table__.create(session.get_bind())
+        Agregado.__table__.create(session.get_bind())
+        AgregadoCategoria.__table__.create(session.get_bind())
         catalog_cache.invalidate()
         brand_cache.invalidate()
         monkeypatch.setattr(public, "engine", session.get_bind())
@@ -224,7 +226,7 @@ def test_halves_do_not_receive_whole_pizza_promos_and_count_as_one_for_wholesale
 
 def test_confirmation_persists_both_flavors_and_category_with_average_price(pizzas, monkeypatch):
     session, ids, products, _ = pizzas
-    for model in (Cliente, Pedido, PedidoItem):
+    for model in (Cliente, Pedido, PedidoItem, PedidoItemAgregado, PedidoPago):
         model.__table__.create(session.get_bind())
     monkeypatch.setattr("gastroflow.services.orders.next_business_code", lambda *args: "PED-MITADES")
     first, second = products["Especial"].id, products["Fugazzetta"].id

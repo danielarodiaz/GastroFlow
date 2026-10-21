@@ -15,7 +15,7 @@ from sqlmodel import create_engine, select
 from gastroflow.domain.enums import EstadoPedido, FormaPago, RolUsuario, TipoPromocion
 from gastroflow.domain.errors import ValidationError
 from gastroflow.internal_app import streamlit_app as internal
-from gastroflow.models import Cliente, Pedido, PedidoItem, ProductoCategoria, Promocion, PromocionCategoria, PromocionProducto
+from gastroflow.models import Cliente, Pedido, PedidoItem, PedidoItemAgregado, PedidoPago, ProductoCategoria, Promocion, PromocionCategoria, PromocionProducto
 from gastroflow.services.orders import OrderItemInput, OrderService, PublicOrderInput
 from gastroflow.services.public_catalog import catalog_cache
 from gastroflow.services.promotions import configure_promotion
@@ -35,7 +35,7 @@ def specials(pizzas, monkeypatch):
             relation.visible, relation.permite_pedido_especial = False, True
             session.add(relation)
     session.commit()
-    for model in (Cliente, Pedido, PedidoItem):
+    for model in (Cliente, Pedido, PedidoItem, PedidoItemAgregado, PedidoPago):
         model.__table__.create(session.get_bind())
     monkeypatch.setattr("gastroflow.services.orders.next_business_code", lambda *args: "PED-ESPECIAL")
     catalog_cache.invalidate()

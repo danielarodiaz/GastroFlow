@@ -8,7 +8,7 @@ from sqlalchemy import JSON, MetaData, event
 from sqlmodel import Session, create_engine
 
 from gastroflow.domain.enums import UnidadVenta
-from gastroflow.models import Categoria, Producto, ProductoCategoria, ZonaEnvio
+from gastroflow.models import Agregado, AgregadoCategoria, Categoria, Producto, ProductoCategoria, ZonaEnvio
 from gastroflow.services import public_catalog
 from gastroflow.services.public_catalog import PublicReadCache, brand_cache, catalog_cache
 from gastroflow.states import public_order_state as app_state
@@ -187,7 +187,7 @@ def test_failed_catalog_read_can_be_retried():
     assert cache.get(lambda: "recovered") == "recovered"
 
 
-def test_catalog_join_uses_three_reads_and_filters_private_products(monkeypatch):
+def test_catalog_join_uses_five_reads_and_filters_private_products(monkeypatch):
     engine = create_engine("sqlite://")
     Categoria.__table__.create(engine)
     # Test-only SQLite representation of PostgreSQL's JSONB photo list.
@@ -197,6 +197,8 @@ def test_catalog_join_uses_three_reads_and_filters_private_products(monkeypatch)
     ProductoCategoria.__table__.create(engine)
     ZonaEnvio.__table__.create(engine)
     app_state.ComboRegla.__table__.create(engine)
+    Agregado.__table__.create(engine)
+    AgregadoCategoria.__table__.create(engine)
     with Session(engine) as session:
         session.add_all([
             Categoria(id=1, codigo="PUBLIC", nombre="Público"),
@@ -215,9 +217,11 @@ def test_catalog_join_uses_three_reads_and_filters_private_products(monkeypatch)
     reads = []
     event.listen(engine, "before_cursor_execute", lambda conn, cursor, statement, *args: reads.append(statement))
     monkeypatch.setattr(app_state, "engine", engine)
-    categories, products, relations, zones, combos = app_state._public_catalog_rows()
-    assert len(reads) == 3
+    categories, products, relations, zones, combos, addons, addon_categories = app_state._public_catalog_rows()
+    assert len(reads) == 5
     assert combos == []
+    assert addons == []
+    assert addon_categories == []
     assert {category.id for category in categories} == {1, 2}
     assert [product.id for product in products] == [1]
     assert [(relation.producto_id, relation.categoria_id) for relation in relations] == [(1, 1)]

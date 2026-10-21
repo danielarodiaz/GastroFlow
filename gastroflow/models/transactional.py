@@ -34,7 +34,7 @@ class UsuarioRead(UsuarioBase):
 
 class ClienteBase(SQLModel):
     nombre_apellido: str = Field(max_length=160)
-    telefono: str = Field(index=True, unique=True, max_length=40)
+    telefono: Optional[str] = Field(default=None, index=True, unique=True, max_length=40)
 
 
 class Cliente(ClienteBase, IdMixin, table=True):
@@ -113,6 +113,47 @@ class PedidoItemCreate(PedidoItemBase):
 
 
 class PedidoItemRead(PedidoItemBase):
+    id: int
+
+
+class PedidoPagoBase(SQLModel):
+    pedido_id: int = Field(foreign_key="pedido.id", index=True)
+    forma_pago: FormaPago = Field(
+        sa_column=Column(SAEnum(FormaPago, name="forma_pago"), nullable=False)
+    )
+    monto: Decimal = Field(sa_column=money_column())
+
+
+class PedidoPago(PedidoPagoBase, IdMixin, table=True):
+    __tablename__ = "pedido_pago"
+
+
+class PedidoPagoCreate(PedidoPagoBase):
+    pass
+
+
+class PedidoPagoRead(PedidoPagoBase):
+    id: int
+
+
+class PedidoItemAgregadoBase(SQLModel):
+    pedido_item_id: int = Field(foreign_key="pedido_item.id", index=True)
+    agregado_id: int = Field(foreign_key="agregado.id")
+    agregado_nombre: str = Field(max_length=140)
+    cantidad: int = Field(gt=0)
+    precio_unitario: Decimal = Field(sa_column=money_column())
+    subtotal: Decimal = Field(sa_column=money_column())
+
+
+class PedidoItemAgregado(PedidoItemAgregadoBase, IdMixin, table=True):
+    __tablename__ = "pedido_item_agregado"
+
+
+class PedidoItemAgregadoCreate(PedidoItemAgregadoBase):
+    pass
+
+
+class PedidoItemAgregadoRead(PedidoItemAgregadoBase):
     id: int
 
 

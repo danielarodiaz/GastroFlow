@@ -345,6 +345,26 @@ def combo_option(option: rx.Var[dict]) -> rx.Component:
     return rx.select.item(option["nombre"], value=option["id_str"])
 
 
+def addon_option(addon: rx.Var[dict]) -> rx.Component:
+    return rx.hstack(
+        rx.vstack(
+            rx.text(addon["nombre"], font_weight="900", color=GREEN),
+            rx.text("$", addon["precio_display"], color="#725f45", font_size="0.88rem"),
+            spacing="0",
+            align="start",
+        ),
+        rx.spacer(),
+        outline_button("−", on_click=PublicOrderState.decrement_selected_addon(addon["id"])),
+        rx.text(addon["cantidad"], min_width="1.5rem", text_align="center", font_weight="900"),
+        outline_button("+", on_click=PublicOrderState.increment_selected_addon(addon["id"])),
+        width="100%",
+        align="center",
+        padding="0.55rem",
+        border="1px solid rgba(23, 46, 29, 0.12)",
+        border_radius="12px",
+    )
+
+
 def detail_view() -> rx.Component:
     return rx.vstack(
         rx.hstack(
@@ -413,6 +433,19 @@ def detail_view() -> rx.Component:
                         style=input_style(),
                     ),
                 ),
+                rx.cond(
+                    PublicOrderState.available_addons.length() > 0,
+                    field(
+                        "Agregados",
+                        rx.vstack(
+                            rx.foreach(PublicOrderState.available_addons, addon_option),
+                            spacing="2",
+                            align="stretch",
+                            width="100%",
+                        ),
+                    ),
+                    rx.fragment(),
+                ),
                 pill_button("Agregar al carrito", on_click=PublicOrderState.add_selected_to_cart, background=RED, loading=PublicOrderState.is_updating_cart,
                     disabled=PublicOrderState.is_submitting | (PublicOrderState.registered_order_code != "")
                     | ((PublicOrderState.pizza_mode == "Mitad y mitad") & (PublicOrderState.selected_combo_id == ""))),
@@ -437,6 +470,11 @@ def cart_item(item: rx.Var[dict]) -> rx.Component:
             rx.cond(item.get("es_especial", False), rx.text("Pedido especial · Disponibilidad pendiente de aceptación", color=RED, font_weight="900", font_size="0.88rem"), rx.fragment()),
             rx.text("Cantidad: ", item["cantidad"], " | Subtotal: $", item["subtotal_display"], color="#725f45"),
             rx.cond(
+                item.get("agregados_display", "") != "",
+                rx.text("Agregados: ", item.get("agregados_display", ""), color=GREEN, font_size="0.88rem"),
+                rx.fragment(),
+            ),
+            rx.cond(
                 item["promo_label"] != "",
                 rx.text(item["promo_label"], color=RED, font_weight="900", font_size="0.88rem"),
                 rx.fragment(),
@@ -445,7 +483,10 @@ def cart_item(item: rx.Var[dict]) -> rx.Component:
             align="start",
             flex="1",
         ),
-        outline_button("Quitar", on_click=PublicOrderState.remove_cart_item(item["producto_id"], item["categoria_codigo"], item.get("producto_combo_id", 0)), disabled=PublicOrderState.is_updating_cart | PublicOrderState.is_submitting | (PublicOrderState.registered_order_code != "")),
+        outline_button("Quitar", on_click=PublicOrderState.remove_cart_item(
+            item["producto_id"], item["categoria_codigo"],
+            item.get("producto_combo_id", 0), item.get("addon_key", ""),
+        ), disabled=PublicOrderState.is_updating_cart | PublicOrderState.is_submitting | (PublicOrderState.registered_order_code != "")),
         width="100%",
         padding="0.85rem",
         border_radius="14px",
@@ -650,10 +691,42 @@ def cart_view() -> rx.Component:
                             rx.grid(
                                 payment_button("Efectivo", "efectivo"),
                                 payment_button("Transferencia", "transferencia"),
+                                payment_button("Pago dividido", "mixto"),
                                 columns="repeat(auto-fit, minmax(min(100%, 150px), 1fr))",
                                 spacing="2",
                                 width="100%",
                             ),
+                        ),
+                        rx.cond(
+                            PublicOrderState.forma_pago == "mixto",
+                            rx.grid(
+                                field(
+                                    "Monto en efectivo",
+                                    rx.input(
+                                        value=PublicOrderState.pago_efectivo,
+                                        name="pago_efectivo",
+                                        on_change=PublicOrderState.set_pago_efectivo,
+                                        placeholder="0,00",
+                                        input_mode="decimal",
+                                        style=input_style(),
+                                    ),
+                                ),
+                                field(
+                                    "Monto por transferencia",
+                                    rx.input(
+                                        value=PublicOrderState.pago_transferencia,
+                                        name="pago_transferencia",
+                                        on_change=PublicOrderState.set_pago_transferencia,
+                                        placeholder="0,00",
+                                        input_mode="decimal",
+                                        style=input_style(),
+                                    ),
+                                ),
+                                columns="repeat(auto-fit, minmax(min(100%, 160px), 1fr))",
+                                spacing="2",
+                                width="100%",
+                            ),
+                            rx.fragment(),
                         ),
                         rx.cond(
                             PublicOrderState.forma_pago == "efectivo",

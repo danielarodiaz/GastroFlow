@@ -17,7 +17,16 @@ from sqlmodel import Session, select
 from gastroflow.data.database import engine
 from gastroflow.domain.enums import FormaPago
 from gastroflow.domain.errors import DomainError
-from gastroflow.models import AppConfig, Categoria, ComboRegla, Producto, ProductoCategoria, ZonaEnvio
+from gastroflow.models import (
+    Agregado,
+    AgregadoCategoria,
+    AppConfig,
+    Categoria,
+    ComboRegla,
+    Producto,
+    ProductoCategoria,
+    ZonaEnvio,
+)
 from gastroflow.services.combo_rules import HALF_PIZZA_CONTEXTS
 from gastroflow.services.media_storage import normalize_media_url
 from gastroflow.services.orders import (
@@ -26,7 +35,9 @@ from gastroflow.services.orders import (
     EVENTS_MINIMUM_MESSAGE,
     EVENTS_MINIMUM_UNITS,
     WHOLESALE_CONTEXT_CODE,
+    OrderAddonInput,
     OrderItemInput,
+    OrderPaymentInput,
     OrderService,
     PublicOrderInput,
     normalize_phone,
@@ -44,6 +55,15 @@ TRANSFER_ALIAS = os.getenv("TRANSFER_ALIAS", "")
 def _money_text(value: Decimal | str | int) -> str:
     amount = Decimal(str(value)).quantize(MONEY_QUANT)
     return f"{amount:.2f}".replace(".", ",")
+
+
+def _parse_money_input(value: str) -> Decimal:
+    clean = value.strip().replace("$", "").replace(" ", "")
+    if not clean:
+        return Decimal("0.00")
+    if "," in clean:
+        clean = clean.replace(".", "").replace(",", ".")
+    return Decimal(clean).quantize(MONEY_QUANT)
 
 
 def _friendly_error(exc: Exception) -> str:
@@ -150,6 +170,13 @@ def _cart_input(item: dict[str, Any]) -> OrderItemInput:
         producto_id=int(item["producto_id"]), cantidad=int(item["cantidad"]),
         producto_combo_id=int(item.get("producto_combo_id") or 0) or None,
         contexto_origen=str(item.get("categoria_codigo") or DEFAULT_CONTEXT_CODE),
+        agregados=tuple(
+            OrderAddonInput(
+                agregado_id=int(addon["id"]),
+                cantidad=int(addon["cantidad"]),
+            )
+            for addon in item.get("agregados", [])
+        ),
     )
 
 
@@ -172,10 +199,15 @@ def _public_catalog_rows():
         ).all()
         zones = session.exec(select(ZonaEnvio)).all()
         combos = session.exec(select(ComboRegla)).all()
+        addons = session.exec(select(Agregado).where(Agregado.activo == True)).all()
+        addon_categories = session.exec(select(AgregadoCategoria)).all()
     categories = {category.id: category for category, _, _ in rows}
     products = {product.id: product for _, _, product in rows if product is not None}
     relations = [relation for _, relation, product in rows if relation is not None and product is not None]
-    return list(categories.values()), list(products.values()), relations, zones, combos
+    return (
+        list(categories.values()), list(products.values()), relations, zones, combos,
+        addons, addon_categories,
+    )
 
 
 class BrandState(rx.State):
@@ -198,6 +230,8 @@ class PublicOrderState(rx.State):
     pizza_mode: str = "Un solo sabor"
     selected_combo_id: str = ""
     combo_rules: list[dict[str, Any]] = []
+    addons: list[dict[str, Any]] = []
+    selected_addons: dict[str, int] = {}
     special_catalog: bool = False
     registered_order_is_special: bool = False
     nombre_apellido: str = ""
@@ -210,6 +244,8 @@ class PublicOrderState(rx.State):
     selected_zone_name: str = ""
     selected_zone_cost: str = "0,00"
     forma_pago: str = FormaPago.EFECTIVO.value
+    pago_efectivo: str = ""
+    pago_transferencia: str = ""
     observaciones: str = ""
     cart_total: str = "0.00"
     cart_total_display: str = "0,00"
@@ -269,6 +305,20 @@ class PublicOrderState(rx.State):
         return _money_text(self.selected_product.get("precio", "0"))
 
     @rx.var
+    def available_addons(self) -> list[dict[str, Any]]:
+        if not self.selected_product:
+            return []
+        category_id = str(self.selected_product.get("categoria_id", ""))
+        return [
+            {
+                **addon,
+                "cantidad": self.selected_addons.get(addon["id_str"], 0),
+            }
+            for addon in self.addons
+            if category_id in addon["categoria_ids"]
+        ]
+
+    @rx.var
     def events_minimum_message(self) -> str:
         units = sum(
             int(item["cantidad"]) for item in self.cart
@@ -291,7 +341,11 @@ class PublicOrderState(rx.State):
             )
             brand = await self.get_state(BrandState)
             brand.logo_url = _normalize_upload_path(logo_url)
-            categories, products, product_categories, zones, combos = rows
+            if len(rows) == 5:
+                categories, products, product_categories, zones, combos = rows
+                addons, addon_categories = [], []
+            else:
+                categories, products, product_categories, zones, combos, addons, addon_categories = rows
         except Exception as exc:
             self.is_loading_catalog = False
             self.catalog_error = "No pudimos cargar el catálogo. Presioná Reintentar."
@@ -300,6 +354,20 @@ class PublicOrderState(rx.State):
 
         category_names = {category.id: category.nombre for category in categories}
         self.combo_rules = [rule.model_dump() for rule in combos]
+        categories_by_addon: dict[int, list[str]] = {}
+        for link in addon_categories:
+            categories_by_addon.setdefault(link.agregado_id, []).append(str(link.categoria_id))
+        self.addons = [
+            {
+                "id": addon.id,
+                "id_str": str(addon.id),
+                "nombre": addon.nombre,
+                "precio": str(addon.precio),
+                "precio_display": _money_text(addon.precio),
+                "categoria_ids": categories_by_addon.get(addon.id or 0, []),
+            }
+            for addon in addons
+        ]
         category_codes = {category.id: category.codigo for category in categories}
         product_by_id = {product.id: product for product in products if product.activo}
         product_count_by_category: dict[int, int] = {}
@@ -367,6 +435,7 @@ class PublicOrderState(rx.State):
         self.selected_product = {}
         self.pizza_mode = "Un solo sabor"
         self.selected_combo_id = ""
+        self.selected_addons = {}
         self.message = ""
 
     def show_category(self, category_id: int) -> None:
@@ -378,6 +447,7 @@ class PublicOrderState(rx.State):
         self.selected_product = {}
         self.pizza_mode = "Un solo sabor"
         self.selected_combo_id = ""
+        self.selected_addons = {}
         self.view = "products"
         self.message = ""
 
@@ -405,6 +475,7 @@ class PublicOrderState(rx.State):
         self.selected_product = product
         self.pizza_mode = "Un solo sabor"
         self.selected_combo_id = ""
+        self.selected_addons = {}
         self.detail_quantity = "1"
         self.view = "detail"
         self.message = ""
@@ -422,6 +493,24 @@ class PublicOrderState(rx.State):
         if any(option["id_str"] == product_id for option in self.combo_options):
             self.selected_combo_id = product_id
             self.message = ""
+
+    def increment_selected_addon(self, addon_id: int) -> None:
+        if not any(addon["id"] == addon_id for addon in self.available_addons):
+            return
+        selected = dict(self.selected_addons)
+        key = str(addon_id)
+        selected[key] = selected.get(key, 0) + 1
+        self.selected_addons = selected
+
+    def decrement_selected_addon(self, addon_id: int) -> None:
+        selected = dict(self.selected_addons)
+        key = str(addon_id)
+        quantity = selected.get(key, 0) - 1
+        if quantity > 0:
+            selected[key] = quantity
+        else:
+            selected.pop(key, None)
+        self.selected_addons = selected
 
     async def add_selected_to_cart(self):
         if self.is_updating_cart or self.registered_order_code or self.is_submitting:
@@ -454,11 +543,26 @@ class PublicOrderState(rx.State):
                 product_id, combo_id = combo_id, product_id
             else:
                 name = f"Mitad {name} / mitad {option['nombre']}"
+        selected_addons = [
+            {
+                **addon,
+                "cantidad": self.selected_addons.get(addon["id_str"], 0),
+            }
+            for addon in self.available_addons
+            if self.selected_addons.get(addon["id_str"], 0) > 0
+        ]
+        addon_key = tuple(sorted(
+            (int(addon["id"]), int(addon["cantidad"])) for addon in selected_addons
+        ))
         cart = list(self.cart)
         for index, item in enumerate(cart):
             if (
                 _pizza_key(int(item["producto_id"]), int(item.get("producto_combo_id") or 0)) == _pizza_key(product_id, combo_id)
                 and item["categoria_codigo"] == self.selected_product["categoria_codigo"]
+                and tuple(sorted(
+                    (int(addon["id"]), int(addon["cantidad"]))
+                    for addon in item.get("agregados", [])
+                )) == addon_key
             ):
                 item["cantidad"] = int(item["cantidad"]) + quantity
                 cart[index] = item
@@ -482,6 +586,14 @@ class PublicOrderState(rx.State):
                     "discount": "0.00",
                     "discount_display": "0,00",
                     "promo_label": "",
+                    "agregados": selected_addons,
+                    "addon_key": "|".join(
+                        f"{addon_id}:{addon_quantity}"
+                        for addon_id, addon_quantity in addon_key
+                    ),
+                    "agregados_display": ", ".join(
+                        f"{addon['cantidad']}x {addon['nombre']}" for addon in selected_addons
+                    ),
                     "foto": self.selected_product.get("foto", ""),
                 }
             )
@@ -493,10 +605,17 @@ class PublicOrderState(rx.State):
         finally:
             self.is_updating_cart = False
         self.message = "Se agregó al carrito correctamente."
+        self.selected_addons = {}
         self.view = "products"
         yield rx.toast.success(self.message)
 
-    async def remove_cart_item(self, product_id: int, category_code: str, combo_product_id: int = 0):
+    async def remove_cart_item(
+        self,
+        product_id: int,
+        category_code: str,
+        combo_product_id: int = 0,
+        addon_key: str | None = None,
+    ):
         if self.is_updating_cart or self.registered_order_code or self.is_submitting:
             return
         self.cart = [
@@ -504,6 +623,7 @@ class PublicOrderState(rx.State):
             if not (
                 _pizza_key(int(item["producto_id"]), int(item.get("producto_combo_id") or 0)) == _pizza_key(int(product_id), int(combo_product_id))
                 and item["categoria_codigo"] == category_code
+                and (addon_key is None or item.get("addon_key", "") == addon_key)
             )
         ]
         self.is_updating_cart = True
@@ -549,7 +669,18 @@ class PublicOrderState(rx.State):
         self._refresh_order_total()
 
     def set_forma_pago(self, value: str) -> None:
+        if value not in {item.value for item in FormaPago}:
+            return
         self.forma_pago = value
+        if value != FormaPago.MIXTO.value:
+            self.pago_efectivo = ""
+            self.pago_transferencia = ""
+
+    def set_pago_efectivo(self, value: str) -> None:
+        self.pago_efectivo = value
+
+    def set_pago_transferencia(self, value: str) -> None:
+        self.pago_transferencia = value
 
     async def submit_order(self, form_data: dict[str, Any]):
         if self.is_submitting or self.registered_order_code or self.is_updating_cart:
@@ -559,7 +690,10 @@ class PublicOrderState(rx.State):
             yield rx.toast.error(self.message)
             return
         # Read the actual inputs, including the last keystroke still awaiting debounce.
-        for field in ("nombre_apellido", "telefono", "fecha_entrega", "horario_entrega", "direccion_delivery", "observaciones"):
+        for field in (
+            "nombre_apellido", "telefono", "fecha_entrega", "horario_entrega",
+            "direccion_delivery", "observaciones", "pago_efectivo", "pago_transferencia",
+        ):
             if field in form_data:
                 setattr(self, field, str(form_data[field]))
         self.is_submitting = True
@@ -577,6 +711,16 @@ class PublicOrderState(rx.State):
             if self.delivery_mode == "delivery" and not self.zona_envio_id:
                 raise ValueError("Selecciona una zona de envio.")
             items = [_cart_input(item) for item in self.cart]
+            payments: tuple[OrderPaymentInput, ...] = ()
+            if self.forma_pago == FormaPago.MIXTO.value:
+                cash = _parse_money_input(self.pago_efectivo)
+                transfer = _parse_money_input(self.pago_transferencia)
+                if cash <= 0 or transfer <= 0:
+                    raise ValueError("Ingresa importes mayores a cero para efectivo y transferencia.")
+                payments = (
+                    OrderPaymentInput(FormaPago.EFECTIVO, cash),
+                    OrderPaymentInput(FormaPago.TRANSFERENCIA, transfer),
+                )
             if not self.submission_token:
                 self.submission_token = str(uuid4())
             payload = PublicOrderInput(
@@ -588,6 +732,7 @@ class PublicOrderState(rx.State):
                 direccion_delivery=self.direccion_delivery if self.delivery_mode == "delivery" else "Retiro en el local",
                 zona_envio_id=int(self.zona_envio_id) if self.delivery_mode == "delivery" and self.zona_envio_id else None,
                 forma_pago=FormaPago(self.forma_pago),
+                pagos=payments,
                 observaciones=self.observaciones or None,
                 items=items,
             )
@@ -627,8 +772,12 @@ class PublicOrderState(rx.State):
                     final_unit = Decimal(str(priced_item.precio_unitario))
                     quantity = Decimal(str(cart_item["cantidad"]))
                     base_subtotal = base_unit * quantity
-                    subtotal = Decimal(str(priced_item.subtotal))
-                    discount = base_subtotal - subtotal
+                    subtotal = Decimal(str(getattr(priced_item, "total", priced_item.subtotal)))
+                    addons_subtotal = sum(
+                        (Decimal(str(addon.subtotal)) for addon in getattr(priced_item, "agregados", ())),
+                        Decimal("0.00"),
+                    )
+                    discount = base_subtotal - Decimal(str(priced_item.subtotal))
                     cart_item["precio_final"] = str(final_unit)
                     cart_item["subtotal"] = str(subtotal)
                     cart_item["subtotal_display"] = _money_text(subtotal)
@@ -639,13 +788,22 @@ class PublicOrderState(rx.State):
                         f"{getattr(priced_item, 'promocion_nombre', '') or 'Promo aplicada'}: $-{_money_text(discount)}"
                         if discount > 0 else ""
                     )
+                    cart_item["agregados_display"] = ", ".join(
+                        f"{addon.cantidad}x {addon.nombre}" for addon in getattr(priced_item, "agregados", ())
+                    )
+                    cart_item["agregados_subtotal_display"] = _money_text(addons_subtotal)
             except Exception as exc:
                 if isinstance(exc, ValueError):
                     self.message = _friendly_error(exc)
                 self.technical_error = str(exc)
                 for cart_item in cart:
                     cart_item["categoria_display"] = cart_item["categoria"]
-                    subtotal = Decimal(str(cart_item["precio"])) * Decimal(str(cart_item["cantidad"]))
+                    product_subtotal = Decimal(str(cart_item["precio"])) * Decimal(str(cart_item["cantidad"]))
+                    addons_subtotal = sum(
+                        Decimal(str(addon["precio"])) * Decimal(str(addon["cantidad"]))
+                        for addon in cart_item.get("agregados", [])
+                    )
+                    subtotal = product_subtotal + addons_subtotal
                     cart_item["subtotal"] = str(subtotal)
                     cart_item["subtotal_display"] = _money_text(subtotal)
                     cart_item["base_subtotal_display"] = _money_text(subtotal)
@@ -680,6 +838,9 @@ class PublicOrderState(rx.State):
         self.zona_envio_id = ""
         self.selected_zone_name = ""
         self.selected_zone_cost = "0,00"
+        self.forma_pago = FormaPago.EFECTIVO.value
+        self.pago_efectivo = ""
+        self.pago_transferencia = ""
         self._refresh_order_total()
         self.view = "categories"
 
@@ -704,7 +865,7 @@ class PublicOrderState(rx.State):
                 f"Telefono: {self.telefono}",
                 f"Horario ideal de entrega: {self.horario_entrega}hs",
                 "",
-                f"Forma de pago: {'Transferencia' if self.forma_pago == FormaPago.TRANSFERENCIA.value else 'Efectivo'}",
+                f"Forma de pago: {self._payment_summary()}",
         ]
         if special:
             lines.extend(["", "PEDIDO ESPECIAL — PENDIENTE DE ACEPTACIÓN DE DISPONIBILIDAD",
@@ -747,6 +908,8 @@ class PublicOrderState(rx.State):
                 lines.append(
                     f"{item['cantidad']}x {item['nombre']}: ${item['subtotal_display']}"
                 )
+                if item.get("agregados_display"):
+                    lines.append(f"  Agregados: {item['agregados_display']}")
                 if item.get("es_especial", False):
                     lines.append("Pedido especial — disponibilidad sujeta a aceptación del local")
                 if item.get("promo_label"):
@@ -764,3 +927,13 @@ class PublicOrderState(rx.State):
         phone = "".join(char for char in PIZZERIA_WHATSAPP_PHONE if char.isdigit())
         target = f"https://wa.me/{phone}" if phone else "https://wa.me/"
         return f"{target}?text={quote(chr(10).join(lines))}"
+
+    def _payment_summary(self) -> str:
+        if self.forma_pago == FormaPago.TRANSFERENCIA.value:
+            return "Transferencia"
+        if self.forma_pago == FormaPago.MIXTO.value:
+            return (
+                f"Mixto (Efectivo ${self.pago_efectivo or '0'} + "
+                f"Transferencia ${self.pago_transferencia or '0'})"
+            )
+        return "Efectivo"

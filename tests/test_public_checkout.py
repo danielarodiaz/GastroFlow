@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine, select
 
 from gastroflow.domain.enums import FormaPago, RolUsuario
-from gastroflow.models import Categoria, Cliente, Pedido, PedidoItem, Usuario
+from gastroflow.models import Categoria, Cliente, Pedido, PedidoItem, PedidoPago, Usuario
 from gastroflow.services.auth import AuthService
 from gastroflow.services.orders import OrderItemInput, OrderService, PricedItem, PublicOrderInput
 from gastroflow.states import public_order_state as app_state
@@ -213,7 +213,7 @@ def test_failed_confirmation_can_retry_with_same_token(monkeypatch):
 
 def test_database_retry_returns_existing_order_and_preserves_display_text(monkeypatch):
     engine = create_engine("sqlite://", poolclass=StaticPool)
-    for table in (Cliente.__table__, Pedido.__table__, PedidoItem.__table__, Usuario.__table__):
+    for table in (Cliente.__table__, Pedido.__table__, PedidoItem.__table__, PedidoPago.__table__, Usuario.__table__):
         table.create(engine)
     monkeypatch.setattr("gastroflow.services.orders.next_business_code", lambda *args: "PED-1")
     item = OrderItemInput(producto_id=1, cantidad=1)

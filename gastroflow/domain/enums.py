@@ -17,6 +17,7 @@ class EstadoPedido(str, Enum):
 class FormaPago(str, Enum):
     TRANSFERENCIA = "transferencia"
     EFECTIVO = "efectivo"
+    MIXTO = "mixto"
 
 
 class UnidadVenta(str, Enum):

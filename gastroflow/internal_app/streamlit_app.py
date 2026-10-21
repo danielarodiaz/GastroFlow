@@ -33,6 +33,8 @@ from gastroflow.models import (
     MotivoGasto,
     Pedido,
     PedidoItem,
+    PedidoItemAgregado,
+    PedidoPago,
     Producto,
     ProductoCategoria,
     Promocion,
@@ -379,10 +381,11 @@ def _delivered_order_table_rows(orders: list[dict[str, Any]]) -> list[dict[str, 
                 "Cantidad": item.get("cantidad", ""),
                 "Precio unitario": item.get("precio_unitario_raw"),
                 "Subtotal": item.get("subtotal_raw"),
+                "Agregados": item.get("agregados_texto", ""),
                 "Dirección": order["direccion"],
                 "Zona": order["zona"],
                 "Envío": order["costo_envio"],
-                "Forma de pago": order["forma_pago"].replace("_", " ").title(),
+                "Forma de pago": order["pagos_texto"],
                 "Total": order["monto_total"],
                 "Observaciones": order["observaciones"],
                 "Pedido especial": "Sí" if item.get("pedido_especial") else "No",
@@ -1027,10 +1030,30 @@ def _load_order_rows() -> list[dict[str, Any]]:
             .outerjoin(combo_product, combo_product.id == PedidoItem.producto_combo_id)
             .join(Categoria, Categoria.id == PedidoItem.categoria_venta_id)
         ).all()
+        payment_rows = session.exec(select(PedidoPago).order_by(PedidoPago.id)).all()
+        addon_rows = session.exec(select(PedidoItemAgregado).order_by(PedidoItemAgregado.id)).all()
+
+    payments_by_order: dict[int, list[PedidoPago]] = {}
+    for payment in payment_rows:
+        payments_by_order.setdefault(payment.pedido_id, []).append(payment)
+    addons_by_item: dict[int, list[PedidoItemAgregado]] = {}
+    for addon in addon_rows:
+        addons_by_item.setdefault(addon.pedido_item_id, []).append(addon)
 
     rows_by_id: dict[int, dict[str, Any]] = {}
     for pedido, cliente, zona in order_rows:
         order_id = pedido.id or 0
+        payments = payments_by_order.get(order_id, [])
+        if payments:
+            payment_details = [
+                {
+                    "forma_pago": payment.forma_pago.value,
+                    "monto": payment.monto,
+                }
+                for payment in payments
+            ]
+        else:
+            payment_details = [{"forma_pago": pedido.forma_pago.value, "monto": pedido.monto_total}]
         rows_by_id[order_id] = {
             "id": pedido.id or 0,
             "codigo": pedido.codigo,
@@ -1042,6 +1065,11 @@ def _load_order_rows() -> list[dict[str, Any]]:
             "telefono": cliente.telefono,
             "estado": pedido.estado.value,
             "forma_pago": pedido.forma_pago.value,
+            "pagos": payment_details,
+            "pagos_texto": " + ".join(
+                f"{payment['forma_pago'].replace('_', ' ').title()} {_money_text(payment['monto'])}"
+                for payment in payment_details
+            ),
             "direccion": pedido.direccion_delivery,
             "zona": zona.nombre if zona else "Sin envio",
             "costo_envio": pedido.costo_envio,
@@ -1056,6 +1084,16 @@ def _load_order_rows() -> list[dict[str, Any]]:
         if order is None:
             continue
         order["es_especial"] = order["es_especial"] or item.es_especial
+        item_addons = addons_by_item.get(item.id or 0, [])
+        addon_details = [
+            {
+                "nombre": addon.agregado_nombre,
+                "cantidad": addon.cantidad,
+                "precio_unitario": addon.precio_unitario,
+                "subtotal": addon.subtotal,
+            }
+            for addon in item_addons
+        ]
         order["items"].append(
             {
                 "producto": product.nombre,
@@ -1067,6 +1105,11 @@ def _load_order_rows() -> list[dict[str, Any]]:
                 "precio_unitario": _money_text(item.precio_unitario),
                 "subtotal": _money_text(item.subtotal),
                 "pedido_especial": item.es_especial,
+                "agregados": addon_details,
+                "agregados_texto": ", ".join(
+                    f"{addon['cantidad']} × {addon['nombre']} ({_money_text(addon['subtotal'])})"
+                    for addon in addon_details
+                ),
             }
         )
 
@@ -1326,7 +1369,7 @@ def _show_expense_detail(expense_id: int) -> None:
 def _render_order_detail(order: dict[str, Any]) -> None:
     st.subheader(order["codigo"])
     st.write(f"Cliente: {order['cliente']}")
-    st.write(f"Telefono: {order['telefono']}")
+    st.write(f"Telefono: {order['telefono'] or 'Sin teléfono'}")
     st.write(f"Entrega: {order['fecha_entrega']} a las {order['horario_entrega']}")
     st.write(f"Direccion: {order['direccion']}")
     st.write(f"Zona: {order['zona']}")
@@ -1334,12 +1377,29 @@ def _render_order_detail(order: dict[str, Any]) -> None:
     if order.get("es_especial", False):
         st.info("Pedido especial. El precio registrado es definitivo; solo se debe aceptar la disponibilidad.")
         st.caption("Si hace falta proponer un cambio, acordalo con el cliente antes de confirmar. No se cambian productos ni precios automáticamente.")
-        message = quote(f"Hola {order['cliente']}, te contactamos por la disponibilidad de tu pedido especial {order['codigo']}.")
-        st.link_button("Coordinar con el cliente por WhatsApp", f"https://wa.me/549{order['telefono']}?text={message}")
-    st.dataframe(order["items"], hide_index=True, use_container_width=True)
+        if order["telefono"]:
+            message = quote(f"Hola {order['cliente']}, te contactamos por la disponibilidad de tu pedido especial {order['codigo']}.")
+            st.link_button("Coordinar con el cliente por WhatsApp", f"https://wa.me/549{order['telefono']}?text={message}")
+        else:
+            st.caption("Este cliente histórico no tiene teléfono cargado.")
+    item_rows = [
+        {
+            "Producto": item["producto"],
+            "Combinación": item["combo"],
+            "Categoría": item["categoria"],
+            "Cantidad": item["cantidad"],
+            "Precio unitario": item["precio_unitario"],
+            "Subtotal": item["subtotal"],
+            "Agregados": item["agregados_texto"],
+            "Pedido especial": "Sí" if item["pedido_especial"] else "No",
+        }
+        for item in order["items"]
+    ]
+    st.dataframe(item_rows, hide_index=True, use_container_width=True)
     if order["observaciones"]:
         st.write(f"Observaciones: {order['observaciones']}")
     st.write(f"Envio: {_money_text(order['costo_envio'])}")
+    st.write(f"Pago: {order['pagos_texto']}")
     st.write(f"Total: {_money_text(order['monto_total'])}")
 
 

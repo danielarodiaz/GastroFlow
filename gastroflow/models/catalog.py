@@ -193,6 +193,35 @@ class ZonaEnvioRead(ZonaEnvioBase):
     id: int
 
 
+class AgregadoBase(SQLModel):
+    codigo: str = Field(index=True, unique=True, max_length=50)
+    nombre: str = Field(index=True, max_length=140)
+    precio: Decimal = Field(sa_column=money_column())
+    activo: bool = Field(default=True, sa_column=Column(Boolean, nullable=False))
+
+
+class Agregado(AgregadoBase, IdMixin, table=True):
+    __tablename__ = "agregado"
+
+
+class AgregadoCreate(AgregadoBase):
+    pass
+
+
+class AgregadoRead(AgregadoBase):
+    id: int
+
+
+class AgregadoCategoria(IdMixin, table=True):
+    __tablename__ = "agregado_categoria"
+    __table_args__ = (
+        UniqueConstraint("agregado_id", "categoria_id", name="uq_agregado_categoria"),
+    )
+
+    agregado_id: int = Field(foreign_key="agregado.id", index=True)
+    categoria_id: int = Field(foreign_key="categoria.id", index=True)
+
+
 class MotivoGastoBase(SQLModel):
     nombre: str = Field(index=True, unique=True, max_length=140)
 
