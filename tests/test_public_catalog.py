@@ -98,6 +98,33 @@ def test_invalid_or_stale_product_click_never_opens_another_category(contextual_
     assert state.message
 
 
+def test_detail_quantity_buttons_and_addon_checkbox(contextual_catalog):
+    state = contextual_catalog
+    state.show_category(1)
+    state.open_product(1, 1)
+    state.addons = [{
+        "id": 7,
+        "id_str": "7",
+        "nombre": "Huevo",
+        "precio": "500.00",
+        "precio_display": "500,00",
+        "categoria_ids": ["1"],
+    }]
+
+    state.decrement_detail_quantity()
+    assert state.detail_quantity == "1"
+    state.increment_detail_quantity()
+    state.increment_detail_quantity()
+    assert state.detail_quantity == "3"
+
+    state.set_selected_addon(7, True)
+    assert state.selected_addons == {"7": 1}
+    state.set_selected_addon(7, True)
+    assert state.selected_addons == {"7": 1}
+    state.set_selected_addon(7, False)
+    assert state.selected_addons == {}
+
+
 def test_product_missing_from_current_category_has_no_cross_category_fallback(contextual_catalog):
     state = contextual_catalog
     state.products = [

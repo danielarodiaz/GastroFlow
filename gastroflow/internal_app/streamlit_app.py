@@ -5,6 +5,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import math
 import mimetypes
 import time as time_module
 from datetime import date, datetime, time, timezone
@@ -20,10 +21,11 @@ from sqlmodel import Session, select
 
 from gastroflow.data.database import engine
 from gastroflow.config.settings import get_settings
-from gastroflow.domain.enums import EstadoPedido, RolUsuario, TipoPromocion, UnidadVenta
-from gastroflow.domain.errors import DomainError
+from gastroflow.domain.enums import EstadoPedido, FormaPago, RolUsuario, TipoPromocion, UnidadVenta
+from gastroflow.domain.errors import DomainError, ValidationError
 from gastroflow.domain.order_state import valid_next_states
 from gastroflow.models import (
+    AgregadoCategoria,
     AppConfig,
     Categoria,
     Cliente,
@@ -53,6 +55,7 @@ from gastroflow.services import (
     ExpenseService,
     ExpenseTicketInput,
     OrderService,
+    normalize_phone,
 )
 from gastroflow.services.media_storage import save_media_bytes
 from gastroflow.services.promotions import configure_promotion
@@ -223,6 +226,7 @@ def _render_live_orders() -> None:
 
 def _render_delivered_orders() -> None:
     st.subheader("Mis pedidos entregados")
+    _render_order_admin_editor()
     delivered = [
         row for row in _load_order_rows()
         if row["estado"] == EstadoPedido.ENTREGADO.value
@@ -241,10 +245,11 @@ def _render_delivered_orders() -> None:
 
     month_options = _month_filter_options(delivered)
     filter_cols = st.columns(3)
-    selected_month = filter_cols[0].selectbox(
+    selected_months = filter_cols[0].multiselect(
         "Mes",
-        list(month_options),
+        [value for value in month_options if value != "Todos"],
         format_func=lambda value: month_options[value],
+        placeholder="Todos los meses",
     )
     selected_dates = filter_cols[1].date_input(
         "Rango de fecha (desde / hasta)",
@@ -261,27 +266,51 @@ def _render_delivered_orders() -> None:
     })
     clients = sorted({row["cliente"] for row in delivered})
     zones = sorted({row["zona"] for row in delivered})
-    category = filter_cols[2].selectbox("Categoría", ["Todos", *categories])
+    selected_categories = filter_cols[2].multiselect(
+        "Categoría", categories, placeholder="Todas las categorías"
+    )
     filter_cols_2 = st.columns(3)
-    product = filter_cols_2[0].selectbox("Producto", ["Todos", *products])
-    client = filter_cols_2[1].selectbox("Cliente", ["Todos", *clients])
-    zone = filter_cols_2[2].selectbox("Zona", ["Todos", *zones])
+    selected_products = filter_cols_2[0].multiselect(
+        "Producto", products, placeholder="Todos los productos"
+    )
+    selected_clients = filter_cols_2[1].multiselect(
+        "Cliente", clients, placeholder="Todos los clientes"
+    )
+    selected_zones = filter_cols_2[2].multiselect(
+        "Zona", zones, placeholder="Todas las zonas"
+    )
 
     date_from, date_to = _normalize_date_range(selected_dates)
     filtered = _filter_delivered_orders(
         delivered,
-        month=selected_month,
+        month=selected_months,
         date_from=date_from,
         date_to=date_to,
-        category=category,
-        product=product,
-        client=client,
-        zone=zone,
+        category=selected_categories,
+        product=selected_products,
+        client=selected_clients,
+        zone=selected_zones,
     )
-    st.caption(f"{len(filtered)} pedidos encontrados")
+    visible_item_count = sum(len(order["items"]) for order in filtered)
+    st.caption(f"{len(filtered)} pedidos · {visible_item_count} ítems encontrados")
     if not filtered:
         st.warning("No hay pedidos que coincidan con los filtros seleccionados.")
         return
+    metric_cols = st.columns(3)
+    metric_cols[0].metric(
+        "Total",
+        _money_text(sum((order["monto_total"] for order in filtered), Decimal("0.00"))),
+    )
+    metric_cols[1].metric(
+        "Cantidad de pizzas",
+        sum(
+            int(item.get("cantidad", 0))
+            for order in filtered
+            for item in order["items"]
+            if _is_pizza_item(item)
+        ),
+    )
+    metric_cols[2].metric("Cantidad de pedidos", len(filtered))
     st.dataframe(
         _delivered_order_table_rows(filtered),
         hide_index=True,
@@ -325,43 +354,58 @@ def _normalize_date_range(value: Any) -> tuple[date | None, date | None]:
 def _filter_delivered_orders(
     orders: list[dict[str, Any]],
     *,
-    month: str = "Todos",
+    month: str | list[str] = "Todos",
     date_from: date | None = None,
     date_to: date | None = None,
-    category: str = "Todos",
-    product: str = "Todos",
-    client: str = "Todos",
-    zone: str = "Todos",
+    category: str | list[str] = "Todos",
+    product: str | list[str] = "Todos",
+    client: str | list[str] = "Todos",
+    zone: str | list[str] = "Todos",
 ) -> list[dict[str, Any]]:
+    selected_months = _filter_values(month)
+    selected_categories = _filter_values(category)
+    selected_products = _filter_values(product)
+    selected_clients = _filter_values(client)
+    selected_zones = _filter_values(zone)
     filtered: list[dict[str, Any]] = []
     for order in orders:
         delivery_date = order["fecha_entrega_raw"]
         if order["estado"] != EstadoPedido.ENTREGADO.value:
             continue
-        if month != "Todos" and delivery_date.strftime("%Y-%m") != month:
+        if selected_months and delivery_date.strftime("%Y-%m") not in selected_months:
             continue
         if date_from is not None and delivery_date < date_from:
             continue
         if date_to is not None and delivery_date > date_to:
             continue
-        if client != "Todos" and order["cliente"] != client:
+        if selected_clients and order["cliente"] not in selected_clients:
             continue
-        if zone != "Todos" and order["zona"] != zone:
+        if selected_zones and order["zona"] not in selected_zones:
             continue
-        if category != "Todos" or product != "Todos":
-            matches_item = any(
-                (category == "Todos" or item["categoria"] == category)
-                and (
-                    product == "Todos"
-                    or item["producto"] == product
-                    or item["combo"] == product
-                )
-                for item in order["items"]
+        matching_items = [
+            item
+            for item in order["items"]
+            if (not selected_categories or item["categoria"] in selected_categories)
+            and (
+                not selected_products
+                or item["producto"] in selected_products
+                or item["combo"] in selected_products
             )
-            if not matches_item:
-                continue
-        filtered.append(order)
+        ]
+        if not matching_items:
+            continue
+        filtered.append({**order, "items": matching_items})
     return filtered
+
+
+def _filter_values(value: str | list[str]) -> set[str]:
+    if isinstance(value, str):
+        return set() if value == "Todos" else {value}
+    return {item for item in value if item and item != "Todos"}
+
+
+def _is_pizza_item(item: dict[str, Any]) -> bool:
+    return str(item.get("categoria", "")).casefold() not in {"pre pizzas", "pan árabe"}
 
 
 def _delivered_order_table_rows(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1097,6 +1141,10 @@ def _load_order_rows() -> list[dict[str, Any]]:
         order["items"].append(
             {
                 "producto": product.nombre,
+                "id": item.id or 0,
+                "producto_id": product.id or 0,
+                "combo_id": combo.id if combo else None,
+                "categoria_id": category.id or 0,
                 "combo": combo.nombre if combo else "",
                 "categoria": category.nombre,
                 "cantidad": item.cantidad,
@@ -1352,6 +1400,353 @@ def _show_order_detail(order: dict[str, Any]) -> None:
     else:
         with st.expander("Detalle del pedido", expanded=True):
             _render_order_detail(order)
+
+
+def _render_order_admin_editor() -> None:
+    if st.session_state.role != RolUsuario.ADMIN.value:
+        return
+    with st.expander("Modificar un pedido", expanded=False):
+        st.caption("Buscá el código exacto. Los cambios quedan aplicados al pedido y sus totales.")
+        cols = st.columns([3, 1])
+        code = cols[0].text_input(
+            "Código del pedido",
+            placeholder="PED-0104",
+            key="order_edit_search_code",
+        ).strip().upper()
+        if cols[1].button("Buscar y modificar", use_container_width=True, disabled=not code):
+            order = next((row for row in _load_order_rows() if row["codigo"].upper() == code), None)
+            if order is None:
+                st.error("No existe un pedido con ese código.")
+            else:
+                _show_order_edit_dialog(order["id"])
+
+
+def _show_order_edit_dialog(order_id: int) -> None:
+    if hasattr(st, "dialog"):
+        @st.dialog("Modificar pedido")
+        def dialog() -> None:
+            _render_order_edit_form(order_id)
+
+        dialog()
+    else:
+        with st.expander("Modificar pedido", expanded=True):
+            _render_order_edit_form(order_id)
+
+
+def _render_order_edit_form(order_id: int) -> None:
+    with Session(engine) as session:
+        pedido = session.get(Pedido, order_id)
+        if pedido is None:
+            st.error("Pedido inexistente.")
+            return
+        cliente = session.get(Cliente, pedido.cliente_id)
+        items = session.exec(
+            select(PedidoItem).where(PedidoItem.pedido_id == order_id).order_by(PedidoItem.id)
+        ).all()
+        payments = session.exec(
+            select(PedidoPago).where(PedidoPago.pedido_id == order_id).order_by(PedidoPago.id)
+        ).all()
+        products = session.exec(select(Producto).order_by(Producto.nombre)).all()
+        categories = session.exec(select(Categoria).order_by(Categoria.nombre)).all()
+        zones = session.exec(select(ZonaEnvio).order_by(ZonaEnvio.nombre)).all()
+        product_by_id = {product.id: product for product in products}
+        category_by_id = {category.id: category for category in categories}
+
+    if cliente is None:
+        st.error("El pedido no tiene un cliente válido.")
+        return
+    payment_amounts = {payment.forma_pago: payment.monto for payment in payments}
+    product_names = [product.nombre for product in products]
+    category_names = [category.nombre for category in categories]
+    zone_labels = {"Sin zona": None, **{zone.nombre: zone.id for zone in zones}}
+    selected_zone = next(
+        (label for label, zone_id in zone_labels.items() if zone_id == pedido.zona_envio_id),
+        "Sin zona",
+    )
+    item_rows = [
+        {
+            "ID": item.id,
+            "Producto": product_by_id[item.producto_id].nombre,
+            "Combinación": product_by_id[item.producto_combo_id].nombre if item.producto_combo_id else "",
+            "Categoría": category_by_id[item.categoria_venta_id].nombre,
+            "Cantidad": item.cantidad,
+            "Subtotal": float(item.subtotal),
+            "Especial": item.es_especial,
+        }
+        for item in items
+    ]
+
+    st.caption(f"{pedido.codigo} · El código no se modifica.")
+    with st.form(f"order_edit_form_{order_id}"):
+        customer_cols = st.columns(2)
+        customer_name = customer_cols[0].text_input("Cliente", value=cliente.nombre_apellido)
+        customer_phone = customer_cols[1].text_input("Teléfono", value=cliente.telefono or "")
+        st.caption("Actualizar estos datos modifica el cliente vinculado y, por lo tanto, todos sus pedidos históricos.")
+
+        delivery_cols = st.columns(3)
+        delivery_date = delivery_cols[0].date_input(
+            "Fecha de entrega", value=pedido.fecha_entrega, format="DD/MM/YYYY"
+        )
+        has_delivery_time = delivery_cols[1].checkbox(
+            "Tiene horario", value=pedido.horario_entrega is not None
+        )
+        delivery_time = delivery_cols[2].time_input(
+            "Horario",
+            value=pedido.horario_entrega or time(12, 0),
+            disabled=not has_delivery_time,
+        )
+        address = st.text_input("Dirección", value=pedido.direccion_delivery)
+        shipping_cols = st.columns(2)
+        zone_label = shipping_cols[0].selectbox(
+            "Zona", list(zone_labels), index=list(zone_labels).index(selected_zone)
+        )
+        shipping_cost = shipping_cols[1].number_input(
+            "Costo de envío", min_value=0.0, value=float(pedido.costo_envio), step=100.0
+        )
+
+        state_cols = st.columns(2)
+        payment_method = state_cols[0].selectbox(
+            "Forma de pago",
+            [payment.value for payment in FormaPago],
+            index=[payment.value for payment in FormaPago].index(pedido.forma_pago.value),
+            format_func=lambda value: value.replace("_", " ").title(),
+        )
+        state = state_cols[1].selectbox(
+            "Estado",
+            [status.value for status in EstadoPedido],
+            index=[status.value for status in EstadoPedido].index(pedido.estado.value),
+            format_func=lambda value: value.replace("_", " ").title(),
+        )
+        payment_cols = st.columns(2)
+        cash_amount = payment_cols[0].number_input(
+            "Monto en efectivo",
+            min_value=0.0,
+            value=float(payment_amounts.get(FormaPago.EFECTIVO, Decimal("0.00"))),
+            step=100.0,
+            help="Solo se usa manualmente cuando la forma de pago es Mixto.",
+        )
+        transfer_amount = payment_cols[1].number_input(
+            "Monto por transferencia",
+            min_value=0.0,
+            value=float(payment_amounts.get(FormaPago.TRANSFERENCIA, Decimal("0.00"))),
+            step=100.0,
+            help="Solo se usa manualmente cuando la forma de pago es Mixto.",
+        )
+        observations = st.text_area("Observaciones", value=pedido.observaciones or "")
+        st.markdown("**Ítems del pedido**")
+        edited_items = st.data_editor(
+            item_rows,
+            num_rows="dynamic",
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "ID": st.column_config.NumberColumn("ID", disabled=True),
+                "Producto": st.column_config.SelectboxColumn("Producto", options=product_names, required=True),
+                "Combinación": st.column_config.SelectboxColumn("Combinación", options=["", *product_names]),
+                "Categoría": st.column_config.SelectboxColumn("Categoría", options=category_names, required=True),
+                "Cantidad": st.column_config.NumberColumn("Cantidad", min_value=1, step=1, required=True),
+                "Subtotal": st.column_config.NumberColumn("Subtotal", min_value=0.01, format="$ %.2f", required=True),
+                "Especial": st.column_config.CheckboxColumn("Pedido especial"),
+            },
+            key=f"order_items_editor_{order_id}",
+        )
+        submitted = st.form_submit_button("Guardar cambios", type="primary", use_container_width=True)
+
+    if not submitted:
+        return
+    rows = edited_items.to_dict("records") if hasattr(edited_items, "to_dict") else list(edited_items)
+    try:
+        _update_order(
+            order_id=order_id,
+            customer_name=customer_name,
+            customer_phone=customer_phone,
+            delivery_date=delivery_date,
+            delivery_time=delivery_time if has_delivery_time else None,
+            address=address,
+            zone_id=zone_labels[zone_label],
+            shipping_cost=Decimal(str(shipping_cost)),
+            payment_method=FormaPago(payment_method),
+            cash_amount=Decimal(str(cash_amount)),
+            transfer_amount=Decimal(str(transfer_amount)),
+            state=EstadoPedido(state),
+            observations=observations,
+            item_rows=rows,
+        )
+        _load_order_rows.clear()
+        st.success("Pedido actualizado correctamente.")
+    except (DomainError, ValueError, IntegrityError) as exc:
+        _render_action_error("No se pudo modificar el pedido.", exc)
+
+
+def _update_order(
+    *,
+    order_id: int,
+    customer_name: str,
+    customer_phone: str,
+    delivery_date: date,
+    delivery_time: time | None,
+    address: str,
+    zone_id: int | None,
+    shipping_cost: Decimal,
+    payment_method: FormaPago,
+    cash_amount: Decimal,
+    transfer_amount: Decimal,
+    state: EstadoPedido,
+    observations: str,
+    item_rows: list[dict[str, Any]],
+) -> None:
+    if not customer_name.strip():
+        raise ValidationError("El nombre del cliente es obligatorio.")
+    if not address.strip():
+        raise ValidationError("La dirección es obligatoria.")
+    if shipping_cost < 0:
+        raise ValidationError("El costo de envío no puede ser negativo.")
+    if not item_rows:
+        raise ValidationError("El pedido debe tener al menos un ítem.")
+
+    with Session(engine) as session:
+        AuthService(session).require_admin(_current_user())
+        pedido = session.get(Pedido, order_id)
+        if pedido is None:
+            raise ValidationError("Pedido inexistente.")
+        cliente = session.get(Cliente, pedido.cliente_id)
+        if cliente is None:
+            raise ValidationError("Cliente inexistente.")
+        products = session.exec(select(Producto)).all()
+        categories = session.exec(select(Categoria)).all()
+        product_categories = session.exec(select(ProductoCategoria)).all()
+        product_by_name = {product.nombre: product for product in products}
+        category_by_name = {category.nombre: category for category in categories}
+        allowed_product_categories = {
+            (relation.producto_id, relation.categoria_id)
+            for relation in product_categories
+        }
+        existing_items = {
+            item.id: item
+            for item in session.exec(select(PedidoItem).where(PedidoItem.pedido_id == order_id)).all()
+        }
+        submitted_ids: set[int] = set()
+        prepared_rows: list[tuple[PedidoItem, Decimal]] = []
+        addon_total = Decimal("0.00")
+
+        for row in item_rows:
+            raw_id = row.get("ID")
+            item_id = None if _is_blank_cell(raw_id) else int(raw_id)
+            if item_id is not None:
+                item = existing_items.get(item_id)
+                if item is None:
+                    raise ValidationError("Uno de los ítems no pertenece al pedido.")
+                if item_id in submitted_ids:
+                    raise ValidationError("Hay un ítem duplicado en la edición.")
+                submitted_ids.add(item_id)
+            else:
+                item = PedidoItem(
+                    pedido_id=order_id,
+                    producto_id=0,
+                    categoria_venta_id=0,
+                    cantidad=1,
+                    precio_unitario=Decimal("0.00"),
+                    subtotal=Decimal("0.00"),
+                )
+
+            product = product_by_name.get(str(row.get("Producto") or ""))
+            category = category_by_name.get(str(row.get("Categoría") or ""))
+            combo_name = "" if _is_blank_cell(row.get("Combinación")) else str(row["Combinación"])
+            combo = product_by_name.get(combo_name) if combo_name else None
+            if product is None or category is None or (combo_name and combo is None):
+                raise ValidationError("Revisá producto, combinación y categoría de todos los ítems.")
+            if combo is not None and combo.id == product.id:
+                raise ValidationError("Una pizza mitad y mitad debe tener dos sabores diferentes.")
+            if (product.id, category.id) not in allowed_product_categories or (
+                combo is not None and (combo.id, category.id) not in allowed_product_categories
+            ):
+                raise ValidationError("El producto elegido no está disponible en esa categoría.")
+            raw_quantity = row.get("Cantidad")
+            raw_subtotal = row.get("Subtotal")
+            if _is_blank_cell(raw_quantity) or _is_blank_cell(raw_subtotal):
+                raise ValidationError("Cantidad y subtotal son obligatorios en todos los ítems.")
+            try:
+                quantity_value = Decimal(str(raw_quantity))
+                if not quantity_value.is_finite() or quantity_value != quantity_value.to_integral_value():
+                    raise ValueError
+                quantity = int(quantity_value)
+                subtotal = Decimal(str(raw_subtotal)).quantize(Decimal("0.01"))
+            except (TypeError, ValueError, ArithmeticError):
+                raise ValidationError("Cantidad y subtotal deben ser números válidos.") from None
+            if quantity <= 0 or not subtotal.is_finite() or subtotal <= 0:
+                raise ValidationError("Cantidad y subtotal deben ser mayores a cero.")
+            item.producto_id = product.id or 0
+            item.producto_combo_id = combo.id if combo else None
+            item.categoria_venta_id = category.id or 0
+            item.cantidad = quantity
+            item.subtotal = subtotal
+            item.precio_unitario = (subtotal / Decimal(quantity)).quantize(Decimal("0.01"))
+            item.es_especial = bool(row.get("Especial", False))
+            session.add(item)
+            session.flush()
+
+            item_addons = session.exec(
+                select(PedidoItemAgregado).where(PedidoItemAgregado.pedido_item_id == item.id)
+            ).all()
+            for addon in item_addons:
+                enabled = session.exec(select(AgregadoCategoria).where(
+                    AgregadoCategoria.agregado_id == addon.agregado_id,
+                    AgregadoCategoria.categoria_id == item.categoria_venta_id,
+                )).first()
+                if enabled is None:
+                    raise ValidationError(
+                        f"El agregado {addon.agregado_nombre} no está habilitado para la categoría elegida."
+                    )
+                addon_total += addon.subtotal
+            prepared_rows.append((item, subtotal))
+
+        for item_id, item in existing_items.items():
+            if item_id in submitted_ids:
+                continue
+            for addon in session.exec(select(PedidoItemAgregado).where(
+                PedidoItemAgregado.pedido_item_id == item_id
+            )).all():
+                session.delete(addon)
+            session.delete(item)
+
+        total = (
+            sum((subtotal for _, subtotal in prepared_rows), Decimal("0.00"))
+            + addon_total
+            + shipping_cost
+        ).quantize(Decimal("0.01"))
+        if payment_method == FormaPago.MIXTO:
+            cash = cash_amount.quantize(Decimal("0.01"))
+            transfer = transfer_amount.quantize(Decimal("0.01"))
+            if cash <= 0 or transfer <= 0 or cash + transfer != total:
+                raise ValidationError("Los pagos divididos deben ser mayores a cero y sumar el total del pedido.")
+            new_payments = ((FormaPago.EFECTIVO, cash), (FormaPago.TRANSFERENCIA, transfer))
+        else:
+            new_payments = ((payment_method, total),)
+        for payment in session.exec(select(PedidoPago).where(PedidoPago.pedido_id == order_id)).all():
+            session.delete(payment)
+        for form, amount in new_payments:
+            session.add(PedidoPago(pedido_id=order_id, forma_pago=form, monto=amount))
+
+        cliente.nombre_apellido = " ".join(customer_name.strip().split())
+        cliente.telefono = normalize_phone(customer_phone) if customer_phone.strip() else None
+        cliente.updated_at = datetime.now(timezone.utc)
+        pedido.fecha_entrega = delivery_date
+        pedido.horario_entrega = delivery_time
+        pedido.direccion_delivery = address.strip()
+        pedido.zona_envio_id = zone_id
+        pedido.costo_envio = shipping_cost.quantize(Decimal("0.01"))
+        pedido.forma_pago = payment_method
+        pedido.estado = state
+        pedido.observaciones = observations.strip() or None
+        pedido.monto_total = total
+        pedido.updated_at = datetime.now(timezone.utc)
+        session.add(cliente)
+        session.add(pedido)
+        session.commit()
+
+
+def _is_blank_cell(value: Any) -> bool:
+    return value is None or value == "" or (isinstance(value, float) and math.isnan(value))
 
 
 def _show_expense_detail(expense_id: int) -> None:

@@ -494,23 +494,30 @@ class PublicOrderState(rx.State):
             self.selected_combo_id = product_id
             self.message = ""
 
-    def increment_selected_addon(self, addon_id: int) -> None:
+    def set_selected_addon(self, addon_id: int, checked: bool) -> None:
         if not any(addon["id"] == addon_id for addon in self.available_addons):
             return
         selected = dict(self.selected_addons)
         key = str(addon_id)
-        selected[key] = selected.get(key, 0) + 1
-        self.selected_addons = selected
-
-    def decrement_selected_addon(self, addon_id: int) -> None:
-        selected = dict(self.selected_addons)
-        key = str(addon_id)
-        quantity = selected.get(key, 0) - 1
-        if quantity > 0:
-            selected[key] = quantity
+        if checked:
+            selected[key] = 1
         else:
             selected.pop(key, None)
         self.selected_addons = selected
+
+    def increment_detail_quantity(self) -> None:
+        try:
+            quantity = int(self.detail_quantity)
+        except (TypeError, ValueError):
+            quantity = 0
+        self.detail_quantity = str(max(1, quantity + 1))
+
+    def decrement_detail_quantity(self) -> None:
+        try:
+            quantity = int(self.detail_quantity)
+        except (TypeError, ValueError):
+            quantity = 1
+        self.detail_quantity = str(max(1, quantity - 1))
 
     async def add_selected_to_cart(self):
         if self.is_updating_cart or self.registered_order_code or self.is_submitting:

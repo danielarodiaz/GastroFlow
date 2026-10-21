@@ -347,16 +347,18 @@ def combo_option(option: rx.Var[dict]) -> rx.Component:
 
 def addon_option(addon: rx.Var[dict]) -> rx.Component:
     return rx.hstack(
+        rx.checkbox(
+            checked=addon["cantidad"].to(int) > 0,
+            on_change=PublicOrderState.set_selected_addon(addon["id"]),
+            size="3",
+            color_scheme="green",
+        ),
         rx.vstack(
             rx.text(addon["nombre"], font_weight="900", color=GREEN),
             rx.text("$", addon["precio_display"], color="#725f45", font_size="0.88rem"),
             spacing="0",
             align="start",
         ),
-        rx.spacer(),
-        outline_button("−", on_click=PublicOrderState.decrement_selected_addon(addon["id"])),
-        rx.text(addon["cantidad"], min_width="1.5rem", text_align="center", font_weight="900"),
-        outline_button("+", on_click=PublicOrderState.increment_selected_addon(addon["id"])),
         width="100%",
         align="center",
         padding="0.55rem",
@@ -424,13 +426,27 @@ def detail_view() -> rx.Component:
                 rx.text("$", PublicOrderState.detail_price_display, font_size="1.8rem", font_weight="900"),
                 field(
                     "Cantidad",
-                    rx.input(
-                        value=PublicOrderState.detail_quantity,
-                        on_change=PublicOrderState.set_detail_quantity,
-                        type="number",
-                        min="1",
-                        size="3",
-                        style=input_style(),
+                    rx.hstack(
+                        outline_button(
+                            "−",
+                            on_click=PublicOrderState.decrement_detail_quantity,
+                            aria_label="Disminuir cantidad",
+                        ),
+                        rx.text(
+                            PublicOrderState.detail_quantity,
+                            min_width="3rem",
+                            text_align="center",
+                            font_size="1.15rem",
+                            font_weight="900",
+                            color=GREEN,
+                        ),
+                        outline_button(
+                            "+",
+                            on_click=PublicOrderState.increment_detail_quantity,
+                            aria_label="Aumentar cantidad",
+                        ),
+                        align="center",
+                        spacing="2",
                     ),
                 ),
                 rx.cond(
