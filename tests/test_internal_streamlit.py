@@ -3,8 +3,10 @@ from decimal import Decimal
 
 from sqlalchemy import JSON, MetaData
 from sqlmodel import Session, create_engine, select
+import pytest
 
 from gastroflow.domain.enums import EstadoPedido, FormaPago, RolUsuario, UnidadVenta
+from gastroflow.domain.errors import ValidationError
 from gastroflow.internal_app import streamlit_app as internal
 from gastroflow.internal_app.streamlit_app import (
     _build_production_summary,
@@ -14,8 +16,10 @@ from gastroflow.internal_app.streamlit_app import (
     _filter_delivered_orders,
     _is_pizza_item,
     _normalize_date_range,
+    _prioritize_pending_special_orders,
     _sync_promotion_products,
     _update_order,
+    _updated_order_whatsapp_url,
 )
 from gastroflow.models import (
     Agregado,
@@ -26,6 +30,7 @@ from gastroflow.models import (
     PedidoItem,
     PedidoItemAgregado,
     PedidoPago,
+    PedidoRevision,
     Producto,
     ProductoCategoria,
     PromocionProducto,
@@ -64,12 +69,60 @@ def test_production_summary_groups_products_and_excludes_finished_orders() -> No
     assert summary["14-10-2026"]["categories"]["Lista para comer"]["Mitad Especial / mitad Muzza"] == 1
 
 
+def test_pending_special_orders_are_promoted_without_reordering_other_orders() -> None:
+    regular_early = {"id": 1, "estado": EstadoPedido.PEDIDO.value, "es_especial": False}
+    in_progress = {"id": 2, "estado": EstadoPedido.EN_PROCESO.value, "es_especial": False}
+    special_confirmed = {"id": 3, "estado": EstadoPedido.PEDIDO.value, "es_especial": True}
+    special_pending = {
+        "id": 4,
+        "estado": EstadoPedido.PENDIENTE_CONFIRMACION.value,
+        "es_especial": True,
+    }
+    changed_order_pending = {
+        "id": 5,
+        "estado": EstadoPedido.PENDIENTE_CONFIRMACION.value,
+        "es_especial": False,
+    }
+
+    result = _prioritize_pending_special_orders([
+        regular_early,
+        special_pending,
+        in_progress,
+        changed_order_pending,
+        special_confirmed,
+    ])
+
+    assert [order["id"] for order in result] == [4, 5, 1, 2, 3]
+
+
 def test_auth_token_survives_reload_window_and_rejects_tampering_or_expiry() -> None:
     token = _create_auth_token(7, now=1_000, secret="test-secret")
 
     assert _decode_auth_token(token, now=1_001, secret="test-secret") == 7
     assert _decode_auth_token(f"{token}x", now=1_001, secret="test-secret") is None
     assert _decode_auth_token(token, now=1_000 + (12 * 60 * 60), secret="test-secret") is None
+
+
+def test_updated_order_whatsapp_message_contains_current_summary() -> None:
+    url = _updated_order_whatsapp_url({
+        "codigo": "PED-0217",
+        "cliente": "Ana",
+        "telefono": "3815551234",
+        "fecha_entrega": "23-10-2026",
+        "horario_entrega": "21:30",
+        "costo_envio": Decimal("1500.00"),
+        "monto_total": Decimal("9500.00"),
+        "items": [{
+            "producto": "Muzzarella",
+            "combo": "",
+            "cantidad": 1,
+            "subtotal": "$ 8000.00",
+            "agregados_texto": "",
+        }],
+    })
+
+    assert url.startswith("https://wa.me/5493815551234?text=")
+    assert "PED-0217" in url and "Muzzarella" in url
 
 
 def test_delivered_order_filters_are_combined() -> None:
@@ -169,6 +222,7 @@ def test_admin_order_edit_recalculates_item_total_shipping_and_payment(monkeypat
     Agregado.__table__.create(test_engine)
     AgregadoCategoria.__table__.create(test_engine)
     PedidoItemAgregado.__table__.create(test_engine)
+    PedidoRevision.__table__.create(test_engine)
 
     with Session(test_engine) as session:
         category = Categoria(id=1, codigo="LISTA_COMER", nombre="Lista para comer")
@@ -248,6 +302,7 @@ def test_admin_order_edit_recalculates_item_total_shipping_and_payment(monkeypat
         updated_item = session.get(PedidoItem, 1)
         updated_client = session.get(Cliente, 1)
         payments = session.exec(select(PedidoPago).where(PedidoPago.pedido_id == 1)).all()
+        revisions = session.exec(select(PedidoRevision).where(PedidoRevision.pedido_id == 1)).all()
         assert updated is not None and updated.monto_total == Decimal("11500.00")
         assert updated.forma_pago == FormaPago.TRANSFERENCIA
         assert updated_item is not None and updated_item.precio_unitario == Decimal("5000.00")
@@ -255,3 +310,80 @@ def test_admin_order_edit_recalculates_item_total_shipping_and_payment(monkeypat
         assert [(payment.forma_pago, payment.monto) for payment in payments] == [
             (FormaPago.TRANSFERENCIA, Decimal("11500.00"))
         ]
+        assert len(revisions) == 1
+        assert revisions[0].usuario_nombre == "ADMIN"
+        assert revisions[0].motivo == "Modificación administrativa"
+
+    with Session(test_engine) as session:
+        pending = session.get(Pedido, 1)
+        assert pending is not None
+        pending.estado = EstadoPedido.PENDIENTE_CONFIRMACION
+        session.add(pending)
+        session.commit()
+
+    _update_order(
+        order_id=1,
+        customer_name="Cliente actualizado",
+        customer_phone="3815551234",
+        delivery_date=date(2026, 10, 21),
+        delivery_time=time(21, 30),
+        address="Dirección nueva",
+        zone_id=1,
+        shipping_cost=Decimal("1500.00"),
+        payment_method=FormaPago.TRANSFERENCIA,
+        cash_amount=Decimal("0.00"),
+        transfer_amount=Decimal("0.00"),
+        state=EstadoPedido.PENDIENTE_CONFIRMACION,
+        observations="Cambio acordado",
+        item_rows=[{
+            "ID": 1,
+            "Producto": "Calabresa",
+            "Combinación": "",
+            "Categoría": "Lista para comer",
+            "Cantidad": 2,
+            "Subtotal": 10000,
+            "Especial": False,
+        }],
+        change_reason="Cliente confirmó el reemplazo",
+        action="confirmar_cambio",
+    )
+    with Session(test_engine) as session:
+        confirmed = session.get(Pedido, 1)
+        revisions = session.exec(
+            select(PedidoRevision).where(PedidoRevision.pedido_id == 1).order_by(PedidoRevision.id)
+        ).all()
+        assert confirmed is not None and confirmed.estado == EstadoPedido.PEDIDO
+        assert [revision.accion for revision in revisions] == ["modificar", "confirmar_cambio"]
+
+        confirmed.estado = EstadoPedido.EN_PROCESO
+        session.add(confirmed)
+        session.commit()
+
+    with pytest.raises(ValidationError, match="avisaste a cocina"):
+        _update_order(
+            order_id=1,
+            customer_name="Cliente actualizado",
+            customer_phone="3815551234",
+            delivery_date=date(2026, 10, 21),
+            delivery_time=time(21, 30),
+            address="Dirección nueva",
+            zone_id=1,
+            shipping_cost=Decimal("1500.00"),
+            payment_method=FormaPago.TRANSFERENCIA,
+            cash_amount=Decimal("0.00"),
+            transfer_amount=Decimal("0.00"),
+            state=EstadoPedido.EN_PROCESO,
+            observations="Cambio tardío",
+            item_rows=[{
+                "ID": 1,
+                "Producto": "Calabresa",
+                "Combinación": "",
+                "Categoría": "Lista para comer",
+                "Cantidad": 2,
+                "Subtotal": 10000,
+                "Especial": False,
+            }],
+            change_reason="Cliente llamó nuevamente",
+            action="modificar",
+            preparation_acknowledged=False,
+        )

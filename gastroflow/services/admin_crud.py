@@ -21,6 +21,7 @@ from gastroflow.models import (
     PedidoItem,
     PedidoItemAgregado,
     PedidoPago,
+    PedidoRevision,
     Producto,
     ProductoCategoria,
     Promocion,
@@ -142,6 +143,10 @@ class AdminCrudService:
                 select(PedidoPago).where(PedidoPago.pedido_id == record_id)
             ).all():
                 self.session.delete(payment)
+            for revision in self.session.exec(
+                select(PedidoRevision).where(PedidoRevision.pedido_id == record_id)
+            ).all():
+                self.session.delete(revision)
             for item in items:
                 self.session.delete(item)
         self.session.delete(record)

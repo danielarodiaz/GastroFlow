@@ -2,7 +2,7 @@ from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Column, Enum as SAEnum, String
+from sqlalchemy import Column, Enum as SAEnum, String, Text
 from sqlmodel import Field, SQLModel
 
 from gastroflow.domain.enums import EstadoPedido, FormaPago, RolUsuario
@@ -155,6 +155,21 @@ class PedidoItemAgregadoCreate(PedidoItemAgregadoBase):
 
 class PedidoItemAgregadoRead(PedidoItemAgregadoBase):
     id: int
+
+
+class PedidoRevision(IdMixin, table=True):
+    __tablename__ = "pedido_revision"
+
+    pedido_id: int = Field(foreign_key="pedido.id", index=True)
+    usuario_id: Optional[int] = Field(
+        default=None, foreign_key="usuario.id", ondelete="SET NULL", index=True
+    )
+    usuario_nombre: str = Field(max_length=80)
+    accion: str = Field(max_length=40)
+    motivo: str = Field(sa_column=Column(Text, nullable=False))
+    resumen_anterior: str = Field(sa_column=Column(Text, nullable=False))
+    resumen_nuevo: str = Field(sa_column=Column(Text, nullable=False))
+    created_at: datetime = timestamp_field()
 
 
 class GastoBase(SQLModel):

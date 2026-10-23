@@ -37,6 +37,7 @@ from gastroflow.models import (
     PedidoItem,
     PedidoItemAgregado,
     PedidoPago,
+    PedidoRevision,
     Producto,
     ProductoCategoria,
     Promocion,
@@ -106,6 +107,8 @@ def _init_session_state() -> None:
         "internal_page": "Pedidos",
         "auth_message": "",
         "selected_order_id": None,
+        "order_success_message": "",
+        "last_modified_order": None,
         "show_delivered_orders": False,
         "selected_expense_id": None,
         "expense_ticket_items": [],
@@ -158,6 +161,9 @@ def _render_login() -> None:
 
 def _render_orders() -> None:
     st.title("Pedidos")
+    if success_message := st.session_state.pop("order_success_message", ""):
+        st.toast(success_message, icon="✅")
+    _render_modified_order_notice()
     if st.session_state.show_delivered_orders:
         if st.button("← Volver a pedidos activos"):
             st.session_state.show_delivered_orders = False
@@ -176,6 +182,7 @@ def _render_orders() -> None:
 @st.fragment(run_every=ORDER_REFRESH_INTERVAL)
 def _render_live_orders() -> None:
     orders = [row for row in _load_order_rows() if row["estado"] in ACTIVE_ORDER_STATES]
+    orders = _prioritize_pending_special_orders(orders)
     metric_cols = st.columns(4)
     total_amount = sum((row["monto_total"] for row in orders), Decimal("0.00"))
     metric_cols[0].metric("Pedidos", len(orders))
@@ -200,12 +207,21 @@ def _render_live_orders() -> None:
             cols[2].write(f"{row['fecha_entrega']} · {row['horario_entrega']}")
             cols[3].markdown(_state_badge(row["estado"]), unsafe_allow_html=True)
             cols[4].write(_money_text(row["monto_total"]))
-            special_pending = row.get("es_especial", False) and row["estado"] == EstadoPedido.PENDIENTE_CONFIRMACION.value
-            if row.get("es_especial", False):
-                st.info("Pedido especial — Pendiente de aceptación de disponibilidad" if special_pending else "Pedido especial")
+            special_pending = row["estado"] == EstadoPedido.PENDIENTE_CONFIRMACION.value
+            if special_pending:
+                st.info("Pedido modificado o especial — Pendiente de confirmación")
+            elif row.get("es_especial", False):
+                st.info("Pedido especial")
             if cols[5].button("Ver detalles", key=f"order_detail_{row['id']}", use_container_width=True):
                 st.session_state.selected_order_id = row["id"]
                 _show_order_detail(row)
+
+            if _is_admin() and st.button(
+                "Modificar pedido",
+                key=f"edit_active_order_{row['id']}",
+                use_container_width=True,
+            ):
+                _show_order_edit_dialog(row["id"])
 
             next_states = valid_next_states(EstadoPedido(row["estado"]))
             if special_pending:
@@ -222,6 +238,40 @@ def _render_live_orders() -> None:
                         _transition_order(row["id"], next_state)
                         _load_order_rows.clear()
                         st.rerun(scope="fragment")
+
+
+def _prioritize_pending_special_orders(
+    orders: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Promote orders awaiting confirmation while preserving the existing order."""
+    return sorted(
+        orders,
+        key=lambda row: row["estado"] != EstadoPedido.PENDIENTE_CONFIRMACION.value,
+    )
+
+
+def _render_modified_order_notice() -> None:
+    notice = st.session_state.get("last_modified_order")
+    if not notice:
+        return
+    with st.container(border=True):
+        st.success(f"Pedido {notice['codigo']} modificado")
+        columns = st.columns([2, 1])
+        if notice.get("whatsapp_url"):
+            columns[0].link_button(
+                "Enviar pedido actualizado por WhatsApp",
+                notice["whatsapp_url"],
+                use_container_width=True,
+            )
+        else:
+            columns[0].caption("El cliente no tiene un teléfono cargado para enviar el resumen.")
+        if columns[1].button(
+            "Cerrar aviso",
+            key=f"dismiss_modified_order_{notice['codigo']}",
+            use_container_width=True,
+        ):
+            st.session_state.last_modified_order = None
+            st.rerun()
 
 
 def _render_delivered_orders() -> None:
@@ -1076,6 +1126,9 @@ def _load_order_rows() -> list[dict[str, Any]]:
         ).all()
         payment_rows = session.exec(select(PedidoPago).order_by(PedidoPago.id)).all()
         addon_rows = session.exec(select(PedidoItemAgregado).order_by(PedidoItemAgregado.id)).all()
+        revision_rows = session.exec(
+            select(PedidoRevision).order_by(PedidoRevision.created_at.desc(), PedidoRevision.id.desc())
+        ).all()
 
     payments_by_order: dict[int, list[PedidoPago]] = {}
     for payment in payment_rows:
@@ -1083,6 +1136,9 @@ def _load_order_rows() -> list[dict[str, Any]]:
     addons_by_item: dict[int, list[PedidoItemAgregado]] = {}
     for addon in addon_rows:
         addons_by_item.setdefault(addon.pedido_item_id, []).append(addon)
+    revisions_by_order: dict[int, list[PedidoRevision]] = {}
+    for revision in revision_rows:
+        revisions_by_order.setdefault(revision.pedido_id, []).append(revision)
 
     rows_by_id: dict[int, dict[str, Any]] = {}
     for pedido, cliente, zona in order_rows:
@@ -1122,6 +1178,15 @@ def _load_order_rows() -> list[dict[str, Any]]:
             "creado": pedido.created_at,
             "items": [],
             "es_especial": False,
+            "revisiones": [
+                {
+                    "fecha": revision.created_at,
+                    "usuario": revision.usuario_nombre,
+                    "accion": revision.accion,
+                    "motivo": revision.motivo,
+                }
+                for revision in revisions_by_order.get(order_id, [])
+            ],
         }
     for item, product, combo, category in detail_rows:
         order = rows_by_id.get(item.pedido_id)
@@ -1475,8 +1540,18 @@ def _render_order_edit_form(order_id: int) -> None:
         }
         for item in items
     ]
+    is_pending_confirmation = pedido.estado == EstadoPedido.PENDIENTE_CONFIRMACION
+    is_in_preparation = pedido.estado == EstadoPedido.EN_PROCESO
 
     st.caption(f"{pedido.codigo} · El código no se modifica.")
+    if is_pending_confirmation:
+        st.info(
+            "Podés guardar el acuerdo sin confirmarlo todavía o guardar y confirmar para que el pedido pase al orden normal."
+        )
+    if is_in_preparation:
+        st.warning(
+            "Este pedido ya está en preparación. Verificá el cambio con cocina antes de guardarlo."
+        )
     with st.form(f"order_edit_form_{order_id}"):
         customer_cols = st.columns(2)
         customer_name = customer_cols[0].text_input("Cliente", value=cliente.nombre_apellido)
@@ -1516,6 +1591,7 @@ def _render_order_edit_form(order_id: int) -> None:
             [status.value for status in EstadoPedido],
             index=[status.value for status in EstadoPedido].index(pedido.estado.value),
             format_func=lambda value: value.replace("_", " ").title(),
+            disabled=is_pending_confirmation,
         )
         payment_cols = st.columns(2)
         cash_amount = payment_cols[0].number_input(
@@ -1533,6 +1609,16 @@ def _render_order_edit_form(order_id: int) -> None:
             help="Solo se usa manualmente cuando la forma de pago es Mixto.",
         )
         observations = st.text_area("Observaciones", value=pedido.observaciones or "")
+        change_reason = st.text_input(
+            "Motivo del cambio",
+            placeholder="Ej.: El cliente cambió la mitad de Fugazzetta por Muzzarella completa",
+            help="Quedará registrado en el historial interno del pedido.",
+        )
+        preparation_acknowledged = False
+        if is_in_preparation:
+            preparation_acknowledged = st.checkbox(
+                "Confirmo que avisé a cocina sobre esta modificación"
+            )
         st.markdown("**Ítems del pedido**")
         edited_items = st.data_editor(
             item_rows,
@@ -1550,9 +1636,29 @@ def _render_order_edit_form(order_id: int) -> None:
             },
             key=f"order_items_editor_{order_id}",
         )
-        submitted = st.form_submit_button("Guardar cambios", type="primary", use_container_width=True)
+        if is_pending_confirmation:
+            submit_columns = st.columns(2)
+            keep_pending = submit_columns[0].form_submit_button(
+                "Guardar y mantener pendiente",
+                use_container_width=True,
+            )
+            save_and_confirm = submit_columns[1].form_submit_button(
+                "Guardar y confirmar",
+                type="primary",
+                use_container_width=True,
+            )
+            submitted_action = (
+                "confirmar_cambio" if save_and_confirm
+                else "mantener_pendiente" if keep_pending
+                else ""
+            )
+        else:
+            submitted = st.form_submit_button(
+                "Guardar cambios", type="primary", use_container_width=True
+            )
+            submitted_action = "modificar" if submitted else ""
 
-    if not submitted:
+    if not submitted_action:
         return
     rows = edited_items.to_dict("records") if hasattr(edited_items, "to_dict") else list(edited_items)
     try:
@@ -1568,12 +1674,28 @@ def _render_order_edit_form(order_id: int) -> None:
             payment_method=FormaPago(payment_method),
             cash_amount=Decimal(str(cash_amount)),
             transfer_amount=Decimal(str(transfer_amount)),
-            state=EstadoPedido(state),
+            state=(
+                EstadoPedido.PEDIDO if submitted_action == "confirmar_cambio"
+                else EstadoPedido.PENDIENTE_CONFIRMACION if submitted_action == "mantener_pendiente"
+                else EstadoPedido(state)
+            ),
             observations=observations,
             item_rows=rows,
+            change_reason=change_reason,
+            action=submitted_action,
+            preparation_acknowledged=preparation_acknowledged,
         )
         _load_order_rows.clear()
-        st.success("Pedido actualizado correctamente.")
+        updated_order = next(
+            (row for row in _load_order_rows() if row["id"] == order_id),
+            None,
+        )
+        st.session_state.order_success_message = f"Pedido {pedido.codigo} modificado"
+        st.session_state.last_modified_order = {
+            "codigo": pedido.codigo,
+            "whatsapp_url": _updated_order_whatsapp_url(updated_order) if updated_order else "",
+        }
+        st.rerun()
     except (DomainError, ValueError, IntegrityError) as exc:
         _render_action_error("No se pudo modificar el pedido.", exc)
 
@@ -1594,6 +1716,9 @@ def _update_order(
     state: EstadoPedido,
     observations: str,
     item_rows: list[dict[str, Any]],
+    change_reason: str = "Modificación administrativa",
+    action: str = "modificar",
+    preparation_acknowledged: bool = False,
 ) -> None:
     if not customer_name.strip():
         raise ValidationError("El nombre del cliente es obligatorio.")
@@ -1603,15 +1728,31 @@ def _update_order(
         raise ValidationError("El costo de envío no puede ser negativo.")
     if not item_rows:
         raise ValidationError("El pedido debe tener al menos un ítem.")
+    if not change_reason.strip():
+        raise ValidationError("Indicá el motivo del cambio para guardarlo en el historial.")
+    if action not in {"modificar", "mantener_pendiente", "confirmar_cambio"}:
+        raise ValidationError("La acción de modificación no es válida.")
 
     with Session(engine) as session:
-        AuthService(session).require_admin(_current_user())
+        current_user = _current_user()
+        AuthService(session).require_admin(current_user)
         pedido = session.get(Pedido, order_id)
         if pedido is None:
             raise ValidationError("Pedido inexistente.")
         cliente = session.get(Cliente, pedido.cliente_id)
         if cliente is None:
             raise ValidationError("Cliente inexistente.")
+        if pedido.estado == EstadoPedido.EN_PROCESO and not preparation_acknowledged:
+            raise ValidationError("Confirmá que avisaste a cocina antes de modificar el pedido.")
+        if action in {"mantener_pendiente", "confirmar_cambio"}:
+            if pedido.estado != EstadoPedido.PENDIENTE_CONFIRMACION:
+                raise ValidationError("El pedido ya no está pendiente de confirmación.")
+            state = (
+                EstadoPedido.PEDIDO
+                if action == "confirmar_cambio"
+                else EstadoPedido.PENDIENTE_CONFIRMACION
+            )
+        previous_snapshot = _order_revision_snapshot(session, pedido, cliente)
         products = session.exec(select(Producto)).all()
         categories = session.exec(select(Categoria)).all()
         product_categories = session.exec(select(ProductoCategoria)).all()
@@ -1742,7 +1883,111 @@ def _update_order(
         pedido.updated_at = datetime.now(timezone.utc)
         session.add(cliente)
         session.add(pedido)
+        session.flush()
+        new_snapshot = _order_revision_snapshot(session, pedido, cliente)
+        session.add(PedidoRevision(
+            pedido_id=order_id,
+            usuario_id=current_user.id,
+            usuario_nombre=current_user.username,
+            accion=action,
+            motivo=" ".join(change_reason.strip().split()),
+            resumen_anterior=json.dumps(previous_snapshot, ensure_ascii=False, sort_keys=True),
+            resumen_nuevo=json.dumps(new_snapshot, ensure_ascii=False, sort_keys=True),
+        ))
         session.commit()
+
+
+def _order_revision_snapshot(
+    session: Session,
+    pedido: Pedido,
+    cliente: Cliente,
+) -> dict[str, Any]:
+    items = session.exec(
+        select(PedidoItem).where(PedidoItem.pedido_id == pedido.id).order_by(PedidoItem.id)
+    ).all()
+    product_ids = {
+        product_id
+        for item in items
+        for product_id in (item.producto_id, item.producto_combo_id)
+        if product_id is not None
+    }
+    category_ids = {item.categoria_venta_id for item in items}
+    products = {
+        product.id: product.nombre
+        for product in session.exec(select(Producto).where(Producto.id.in_(product_ids))).all()
+    } if product_ids else {}
+    categories = {
+        category.id: category.nombre
+        for category in session.exec(select(Categoria).where(Categoria.id.in_(category_ids))).all()
+    } if category_ids else {}
+    item_ids = [item.id for item in items if item.id is not None]
+    addons_by_item: dict[int, list[dict[str, Any]]] = {}
+    if item_ids:
+        for addon in session.exec(
+            select(PedidoItemAgregado).where(PedidoItemAgregado.pedido_item_id.in_(item_ids))
+        ).all():
+            addons_by_item.setdefault(addon.pedido_item_id, []).append({
+                "nombre": addon.agregado_nombre,
+                "cantidad": addon.cantidad,
+                "subtotal": str(addon.subtotal),
+            })
+    payments = session.exec(
+        select(PedidoPago).where(PedidoPago.pedido_id == pedido.id).order_by(PedidoPago.id)
+    ).all()
+    return {
+        "codigo": pedido.codigo,
+        "cliente": cliente.nombre_apellido,
+        "telefono": cliente.telefono,
+        "fecha_entrega": pedido.fecha_entrega.isoformat(),
+        "horario_entrega": pedido.horario_entrega.isoformat() if pedido.horario_entrega else None,
+        "direccion": pedido.direccion_delivery,
+        "zona_envio_id": pedido.zona_envio_id,
+        "costo_envio": str(pedido.costo_envio),
+        "estado": pedido.estado.value,
+        "forma_pago": pedido.forma_pago.value,
+        "monto_total": str(pedido.monto_total),
+        "observaciones": pedido.observaciones,
+        "pagos": [
+            {"forma_pago": payment.forma_pago.value, "monto": str(payment.monto)}
+            for payment in payments
+        ],
+        "items": [
+            {
+                "id": item.id,
+                "producto": products.get(item.producto_id, ""),
+                "combinacion": products.get(item.producto_combo_id, "") if item.producto_combo_id else "",
+                "categoria": categories.get(item.categoria_venta_id, ""),
+                "cantidad": item.cantidad,
+                "precio_unitario": str(item.precio_unitario),
+                "subtotal": str(item.subtotal),
+                "es_especial": item.es_especial,
+                "agregados": addons_by_item.get(item.id or 0, []),
+            }
+            for item in items
+        ],
+    }
+
+
+def _updated_order_whatsapp_url(order: dict[str, Any] | None) -> str:
+    if not order or not order.get("telefono"):
+        return ""
+    item_lines: list[str] = []
+    for item in order["items"]:
+        product = item["producto"]
+        if item.get("combo"):
+            product = f"Mitad {product} / mitad {item['combo']}"
+        line = f"- {item['cantidad']} x {product} ({item['subtotal']})"
+        if item.get("agregados_texto"):
+            line += f" + {item['agregados_texto']}"
+        item_lines.append(line)
+    message = "\n".join([
+        f"Hola {order['cliente']}, te envío la actualización de tu pedido {order['codigo']}:",
+        *item_lines,
+        f"Envío: {_money_text(order['costo_envio'])}",
+        f"Total: {_money_text(order['monto_total'])}",
+        f"Entrega: {order['fecha_entrega']} · {order['horario_entrega']}",
+    ])
+    return f"https://wa.me/549{order['telefono']}?text={quote(message)}"
 
 
 def _is_blank_cell(value: Any) -> bool:
@@ -1796,6 +2041,26 @@ def _render_order_detail(order: dict[str, Any]) -> None:
     st.write(f"Envio: {_money_text(order['costo_envio'])}")
     st.write(f"Pago: {order['pagos_texto']}")
     st.write(f"Total: {_money_text(order['monto_total'])}")
+    if order.get("revisiones"):
+        action_labels = {
+            "modificar": "Modificado",
+            "mantener_pendiente": "Modificado · continúa pendiente",
+            "confirmar_cambio": "Modificado y confirmado",
+        }
+        with st.expander(f"Historial de cambios ({len(order['revisiones'])})"):
+            st.dataframe(
+                [
+                    {
+                        "Fecha": _format_display_value(revision["fecha"]),
+                        "Usuario": revision["usuario"],
+                        "Acción": action_labels.get(revision["accion"], revision["accion"]),
+                        "Motivo": revision["motivo"],
+                    }
+                    for revision in order["revisiones"]
+                ],
+                hide_index=True,
+                use_container_width=True,
+            )
 
 
 def _render_expense_detail(expense_id: int) -> None:
