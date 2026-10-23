@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import reflex as rx
 from gastroflow.components.delivery_input import delivery_date_input, delivery_time_input
+from gastroflow.components.public_interactions import public_interactions
 
 from gastroflow.states.public_order_state import BrandState, PublicOrderState
 
@@ -56,6 +57,8 @@ def brand_block(compact: bool = False) -> rx.Component:
 
 
 def pill_button(label: str, **props: object) -> rx.Component:
+    if props.pop("navigation", False):
+        props["custom_attrs"] = {"data-public-navigation": "true"}
     return rx.button(
         label,
         type=props.pop("type", "button"),
@@ -158,7 +161,7 @@ def public_nav() -> rx.Component:
             rx.spacer(),
             pill_button(
                 "Ver mi pedido",
-                on_click=PublicOrderState.show_cart,
+                on_click=PublicOrderState.show_cart, navigation=True,
                 background=RED,
                 color="#fff8e5",
             ),
@@ -227,7 +230,7 @@ def category_card(category: rx.Var[dict]) -> rx.Component:
             rx.text(category["nombre"], font_family=FONT_STACK, font_size="1.4rem", color=GREEN, font_weight="900"),
             rx.cond(category["descripcion"] != "", rx.text(category["descripcion"], color="#725f45", font_size="0.92rem"), rx.fragment()),
             rx.text(category["total"], " productos", color="#725f45", font_weight="700"),
-            pill_button("Ver catalogo", on_click=PublicOrderState.show_category(category["id"]), width="100%"),
+            pill_button("Ver catalogo", on_click=PublicOrderState.show_category(category["id"]), navigation=True, width="100%"),
             spacing="4",
             align="stretch",
         ),
@@ -277,7 +280,7 @@ def product_card(product: rx.Var[dict]) -> rx.Component:
                 rx.hstack(
                     rx.text("$", product["precio"], font_weight="900", color=INK),
                     rx.spacer(),
-                    outline_button("Ver", on_click=PublicOrderState.open_product(product["id"], product["categoria_id"])),
+                    outline_button("Ver", on_click=PublicOrderState.open_product(product["id"], product["categoria_id"]), navigation=True),
                     width="100%",
                     align="center",
                 ),
@@ -313,9 +316,9 @@ def categories_view() -> rx.Component:
 def products_view() -> rx.Component:
     return rx.vstack(
         rx.hstack(
-            outline_button("Volver", on_click=PublicOrderState.show_categories),
+            outline_button("Volver", on_click=PublicOrderState.show_categories, navigation=True),
             rx.spacer(),
-            pill_button("Ver mi pedido", on_click=PublicOrderState.show_cart, background=RED),
+            pill_button("Ver mi pedido", on_click=PublicOrderState.show_cart, navigation=True, background=RED),
             width="100%",
         ),
         rx.heading(rx.cond(PublicOrderState.special_catalog, "Pedido especial", "Productos disponibles"), size="7", font_family=FONT_STACK, color=GREEN),
@@ -323,11 +326,11 @@ def products_view() -> rx.Component:
             PublicOrderState.special_catalog,
             rx.vstack(
                 rx.text("Se prepara únicamente por encargo y está sujeto a aceptación de disponibilidad del local.", color=RED, font_weight="700"),
-                outline_button("Volver al catálogo habitual", on_click=PublicOrderState.show_category(PublicOrderState.selected_category_id)),
+                outline_button("Volver al catálogo habitual", on_click=PublicOrderState.show_category(PublicOrderState.selected_category_id), navigation=True),
                 align="stretch", width="100%",
             ),
             rx.cond(PublicOrderState.has_special_catalog,
-                outline_button("Consultar pedido especial", on_click=PublicOrderState.show_special_category(PublicOrderState.selected_category_id)),
+                outline_button("Consultar pedido especial", on_click=PublicOrderState.show_special_category(PublicOrderState.selected_category_id), navigation=True),
                 rx.fragment()),
         ),
         rx.grid(
@@ -371,15 +374,15 @@ def detail_view() -> rx.Component:
     return rx.vstack(
         rx.hstack(
             rx.cond(PublicOrderState.special_catalog,
-                outline_button("Volver", on_click=PublicOrderState.show_special_category(PublicOrderState.selected_category_id)),
-                outline_button("Volver", on_click=PublicOrderState.show_category(PublicOrderState.selected_category_id))),
+                outline_button("Volver", on_click=PublicOrderState.show_special_category(PublicOrderState.selected_category_id), navigation=True),
+                outline_button("Volver", on_click=PublicOrderState.show_category(PublicOrderState.selected_category_id), navigation=True)),
             rx.spacer(),
-            pill_button("Ver mi pedido", on_click=PublicOrderState.show_cart, background=RED),
+            pill_button("Ver mi pedido", on_click=PublicOrderState.show_cart, navigation=True, background=RED),
             width="100%",
         ),
         rx.grid(
             product_image(PublicOrderState.selected_product, "clamp(220px, 48vw, 360px)"),
-            panel(
+            rx.form(panel(
                 rx.text(PublicOrderState.selected_product["categoria"], color=RED, font_weight="900"),
                 rx.heading(
                     PublicOrderState.selected_product["nombre"],
@@ -392,7 +395,7 @@ def detail_view() -> rx.Component:
                     rx.text("Pedido especial · Sujeto a aceptación de disponibilidad del local.", color=RED, font_weight="900", role="status"),
                     rx.fragment()),
                 rx.cond(PublicOrderState.has_special_catalog & ~PublicOrderState.special_catalog,
-                    outline_button("Consultar sabores para pedido especial", on_click=PublicOrderState.show_special_category(PublicOrderState.selected_category_id)), rx.fragment()),
+                    outline_button("Consultar sabores para pedido especial", on_click=PublicOrderState.show_special_category(PublicOrderState.selected_category_id), navigation=True), rx.fragment()),
                 rx.cond(
                     PublicOrderState.combo_options.length() > 0,
                     rx.vstack(
@@ -427,26 +430,13 @@ def detail_view() -> rx.Component:
                 field(
                     "Cantidad",
                     rx.hstack(
-                        outline_button(
-                            "−",
-                            on_click=PublicOrderState.decrement_detail_quantity,
-                            aria_label="Disminuir cantidad",
-                        ),
-                        rx.text(
-                            PublicOrderState.detail_quantity,
-                            min_width="3rem",
-                            text_align="center",
-                            font_size="1.15rem",
-                            font_weight="900",
-                            color=GREEN,
-                        ),
-                        outline_button(
-                            "+",
-                            on_click=PublicOrderState.increment_detail_quantity,
-                            aria_label="Aumentar cantidad",
-                        ),
-                        align="center",
-                        spacing="2",
+                        rx.el.input(name="detail_quantity", type="hidden", default_value="1"),
+                        outline_button("−", custom_attrs={"data-quantity-step": "-1"}, aria_label="Disminuir cantidad"),
+                        rx.el.output("1", custom_attrs={"data-quantity-display": "true"},
+                            aria_live="polite", min_width="3rem", text_align="center",
+                            font_size="1.15rem", font_weight="900", color=GREEN),
+                        outline_button("+", custom_attrs={"data-quantity-step": "1"}, aria_label="Aumentar cantidad"),
+                        align="center", spacing="2",
                     ),
                 ),
                 rx.cond(
@@ -462,11 +452,12 @@ def detail_view() -> rx.Component:
                     ),
                     rx.fragment(),
                 ),
-                pill_button("Agregar al carrito", on_click=PublicOrderState.add_selected_to_cart, background=RED, loading=PublicOrderState.is_updating_cart,
+                pill_button("Agregar al carrito", type="submit", background=RED, loading=PublicOrderState.is_updating_cart,
                     disabled=PublicOrderState.is_submitting | (PublicOrderState.registered_order_code != "")
                     | ((PublicOrderState.pizza_mode == "Mitad y mitad") & (PublicOrderState.selected_combo_id == ""))),
                 accent=True,
-            ),
+            ), on_submit=PublicOrderState.add_selected_to_cart, reset_on_submit=False,
+                custom_attrs={"data-public-cart-action": "true"}, width="100%"),
             columns="repeat(auto-fit, minmax(min(100%, 340px), 1fr))",
             spacing="5",
             width="100%",
@@ -576,7 +567,7 @@ def payment_button(label: str, value: str) -> rx.Component:
 
 def cart_view() -> rx.Component:
     return rx.vstack(
-        rx.hstack(outline_button("Seguir comprando", on_click=PublicOrderState.show_categories), width="100%"),
+        rx.hstack(outline_button("Seguir comprando", on_click=PublicOrderState.show_categories, navigation=True), width="100%"),
         rx.grid(
             panel(
                 rx.heading("Mi pedido", size="7", font_family=FONT_STACK, color=GREEN),
@@ -612,12 +603,13 @@ def cart_view() -> rx.Component:
                         color=GREEN, font_weight="900", padding="1rem",
                         border=f"2px solid {GREEN}", border_radius="12px",
                     ),
-                    outline_button("Hacer otro pedido", on_click=PublicOrderState.start_new_order),
+                    outline_button("Hacer otro pedido", on_click=PublicOrderState.start_new_order, navigation=True),
                     accent=True,
                 ),
                 rx.form(
                     panel(
                         rx.heading("Confirmar pedido", size="6", font_family=FONT_STACK, color=GREEN),
+                        rx.text("Todos los campos son obligatorios, excepto Observaciones.", color="#514332", font_size="0.86rem"),
                         rx.cond(PublicOrderState.cart_has_special_orders,
                             rx.text("Tu pedido incluye productos por encargo. El pedido completo queda pendiente de aceptación de disponibilidad. Esperá la aceptación antes de pagar.", color=RED, font_weight="900", role="status"),
                             rx.fragment()),
@@ -625,9 +617,9 @@ def cart_view() -> rx.Component:
                             "Nombre y apellido",
                             rx.input(
                                 value=PublicOrderState.nombre_apellido,
-                                name="nombre_apellido",
+                                name="nombre_apellido", required=True,
                                 on_change=PublicOrderState.set_nombre_apellido,
-                                placeholder="Tu nombre",
+                                placeholder="Juan Pérez",
                                 style=input_style(),
                                 _placeholder=placeholder_style(),
                             ),
@@ -636,9 +628,9 @@ def cart_view() -> rx.Component:
                             "Celular",
                             rx.input(
                                 value=PublicOrderState.telefono,
-                                name="telefono",
+                                name="telefono", required=True,
                                 on_change=PublicOrderState.set_telefono,
-                                placeholder="3813543860",
+                                placeholder="3815879536",
                                 input_mode="tel",
                                 style=input_style(),
                                 _placeholder=placeholder_style(),
@@ -652,7 +644,7 @@ def cart_view() -> rx.Component:
                             "Fecha de entrega",
                             delivery_date_input(
                                 default_value=PublicOrderState.fecha_entrega,
-                                name="fecha_entrega",
+                                name="fecha_entrega", required=True,
                                 on_blur=PublicOrderState.complete_delivery_date,
                                 placeholder="DD-MM (año opcional)",
                                 max_length=10,
@@ -664,7 +656,7 @@ def cart_view() -> rx.Component:
                             "Horario ideal de entrega",
                             delivery_time_input(
                                 default_value=PublicOrderState.horario_entrega,
-                                name="horario_entrega",
+                                name="horario_entrega", required=True,
                                 on_blur=PublicOrderState.complete_delivery_time,
                                 placeholder="21 o 21:30",
                                 max_length=5,
@@ -689,7 +681,7 @@ def cart_view() -> rx.Component:
                                     "Direccion",
                                     rx.input(
                                         value=PublicOrderState.direccion_delivery,
-                                        name="direccion_delivery",
+                                        name="direccion_delivery", required=True,
                                         on_change=PublicOrderState.set_direccion_delivery,
                                         placeholder="Calle, numero, localidad",
                                         style=input_style(),
@@ -720,7 +712,7 @@ def cart_view() -> rx.Component:
                                     "Monto en efectivo",
                                     rx.input(
                                         value=PublicOrderState.pago_efectivo,
-                                        name="pago_efectivo",
+                                        name="pago_efectivo", required=True,
                                         on_change=PublicOrderState.set_pago_efectivo,
                                         placeholder="0,00",
                                         input_mode="decimal",
@@ -731,7 +723,7 @@ def cart_view() -> rx.Component:
                                     "Monto por transferencia",
                                     rx.input(
                                         value=PublicOrderState.pago_transferencia,
-                                        name="pago_transferencia",
+                                        name="pago_transferencia", required=True,
                                         on_change=PublicOrderState.set_pago_transferencia,
                                         placeholder="0,00",
                                         input_mode="decimal",
@@ -797,7 +789,7 @@ def cart_view() -> rx.Component:
 
 
 def public_page() -> rx.Component:
-    return public_shell(
+    return public_interactions(public_shell(
         rx.cond(
             PublicOrderState.is_loading_catalog,
             rx.center(rx.hstack(rx.spinner(), rx.text("Cargando catálogo..."), align="center", role="status"), min_height="180px"),
@@ -818,7 +810,10 @@ def public_page() -> rx.Component:
                 ),
             ),
         )
-    )
+    ), id="public_interactions", custom_attrs={
+        "data-navigation-revision": PublicOrderState.navigation_revision.to(str),
+        "data-cart-revision": PublicOrderState.cart_action_revision.to(str),
+    })
 
 
 def health_page() -> rx.Component:

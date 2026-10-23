@@ -412,7 +412,9 @@ class OrderService:
                 relation = origin_relations.get(product_id)
                 if relation is None or not products[product_id].activo or not (relation.visible or relation.permite_pedido_especial):
                     raise ValidationError("El producto no está disponible en la categoría elegida.")
-            special_by_index[index] = any(origin_relations[product_id].permite_pedido_especial for product_id in product_ids)
+            special_by_index[index] = item.producto_combo_id is not None or any(
+                origin_relations[product_id].permite_pedido_especial for product_id in product_ids
+            )
         promotional_prices = (
             {}
             if sale_category.codigo in {EVENTS_CONTEXT_CODE, WHOLESALE_CONTEXT_CODE}
@@ -677,7 +679,7 @@ class OrderService:
         ]
         if any(item.es_especial for item in priced_items):
             lines.extend(["Pedido especial — pendiente de aceptación de disponibilidad.",
-                "El precio es definitivo. No realizar pagos hasta que el local acepte la disponibilidad."])
+                "No realizar pagos hasta que el local acepte la disponibilidad."])
         for priced_item in priced_items:
             lines.append(
                 f"- Producto {priced_item.item.producto_id}"

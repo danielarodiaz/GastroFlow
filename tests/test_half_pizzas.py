@@ -8,7 +8,7 @@ from urllib.parse import unquote
 import pytest
 from sqlmodel import select
 
-from gastroflow.domain.enums import FormaPago, ReglaPrecioCombo, TipoPromocion, UnidadVenta
+from gastroflow.domain.enums import EstadoPedido, FormaPago, ReglaPrecioCombo, TipoPromocion, UnidadVenta
 from gastroflow.domain.errors import ValidationError
 from gastroflow.models import Agregado, AgregadoCategoria, Categoria, Cliente, ComboRegla, Pedido, PedidoItem, PedidoItemAgregado, PedidoPago, Producto, ProductoCategoria, Promocion, PromocionCategoria, PromocionProducto, ZonaEnvio
 from gastroflow.services.combo_rules import HALF_PIZZA_FLAVORS, ensure_half_pizza_rules
@@ -82,6 +82,8 @@ def test_all_ten_pairs_use_only_the_selected_category_prices(pizzas, first, seco
     )])[0]
     assert line.precio_unitario == expected
     assert line.categoria_venta_id == ids[category]
+    assert state.detail_is_special
+    assert line.es_especial and line.requiere_confirmacion
 
 
 def test_combo_registration_is_idempotent_and_reuses_reverse_pairs(pizzas):
@@ -239,3 +241,5 @@ def test_confirmation_persists_both_flavors_and_category_with_average_price(pizz
     assert (item.producto_id, item.producto_combo_id, item.categoria_venta_id) == (first, second, ids["lista_comer"])
     assert item.precio_unitario == Decimal("8750")
     assert item.subtotal == result.pedido.monto_total == Decimal("17500")
+    assert item.es_especial and result.es_especial
+    assert result.pedido.estado == EstadoPedido.PENDIENTE_CONFIRMACION

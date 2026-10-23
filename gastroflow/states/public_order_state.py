@@ -227,6 +227,8 @@ class PublicOrderState(rx.State):
     selected_category_id: str = ""
     view: str = "categories"
     detail_quantity: str = "1"
+    navigation_revision: int = 0
+    cart_action_revision: int = 0
     pizza_mode: str = "Un solo sabor"
     selected_combo_id: str = ""
     combo_rules: list[dict[str, Any]] = []
@@ -266,13 +268,11 @@ class PublicOrderState(rx.State):
 
     @rx.var
     def cart_has_special_orders(self) -> bool:
-        return any(item.get("es_especial", False) for item in self.cart)
+        return any(item.get("es_especial", False) or item.get("producto_combo_id", 0) for item in self.cart)
 
     @rx.var
     def detail_is_special(self) -> bool:
-        return bool(self.selected_product.get("es_especial", False)) or (
-            self.pizza_mode == "Mitad y mitad" and any(option["id_str"] == self.selected_combo_id and option["es_especial"] for option in self.combo_options)
-        )
+        return bool(self.selected_product.get("es_especial", False)) or self.pizza_mode == "Mitad y mitad"
 
     @rx.var
     def combo_options(self) -> list[dict[str, Any]]:
@@ -428,6 +428,7 @@ class PublicOrderState(rx.State):
         self.is_loading_catalog = False
 
     def show_categories(self) -> None:
+        self.navigation_revision += 1
         self.special_catalog = False
         self.view = "categories"
         self.selected_category_id = ""
@@ -439,6 +440,7 @@ class PublicOrderState(rx.State):
         self.message = ""
 
     def show_category(self, category_id: int) -> None:
+        self.navigation_revision += 1
         self.special_catalog = False
         self.selected_category_id = str(category_id)
         self.visible_products = [
@@ -458,6 +460,7 @@ class PublicOrderState(rx.State):
             if str(product["categoria_id"]) == str(category_id) and product.get("es_especial", False)]
 
     def open_product(self, product_id: int, category_id: int) -> None:
+        self.navigation_revision += 1
         # A product can have a different presentation and price in each category.
         # Reject stale clicks from a category that is no longer being viewed.
         if str(category_id) != self.selected_category_id:
@@ -519,14 +522,22 @@ class PublicOrderState(rx.State):
             quantity = 1
         self.detail_quantity = str(max(1, quantity - 1))
 
-    async def add_selected_to_cart(self):
+    async def add_selected_to_cart(self, form_data: dict[str, Any] | None = None):
+        try:
+            async for event in self._add_selected_to_cart(form_data):
+                yield event
+        finally:
+            # Acknowledge only when processing ends, including validation failures.
+            self.cart_action_revision += 1
+
+    async def _add_selected_to_cart(self, form_data: dict[str, Any] | None = None):
         if self.is_updating_cart or self.registered_order_code or self.is_submitting:
             return
         if not self.selected_product:
             self.message = "Selecciona un producto."
             return
         try:
-            quantity = int(self.detail_quantity)
+            quantity = int((form_data or {}).get("detail_quantity", self.detail_quantity))
             if quantity <= 0:
                 raise ValueError
         except ValueError:
@@ -642,6 +653,7 @@ class PublicOrderState(rx.State):
         self.message = ""
 
     def show_cart(self) -> None:
+        self.navigation_revision += 1
         self.view = "cart"
         self.message = ""
 
@@ -710,6 +722,21 @@ class PublicOrderState(rx.State):
         try:
             if not self.cart:
                 raise ValueError("Tu pedido esta vacio.")
+            required = {
+                "nombre_apellido": "Nombre y apellido",
+                "telefono": "Celular",
+                "fecha_entrega": "Fecha de entrega",
+                "horario_entrega": "Horario ideal de entrega",
+            }
+            if self.delivery_mode == "delivery":
+                required["direccion_delivery"] = "Dirección"
+            if self.forma_pago == FormaPago.MIXTO.value:
+                required.update(pago_efectivo="Monto en efectivo", pago_transferencia="Monto por transferencia")
+            for field, label in required.items():
+                if not getattr(self, field).strip():
+                    raise ValueError(f"Completá el campo {label}.")
+            if self.delivery_mode not in {"retiro", "delivery"}:
+                raise ValueError("Seleccioná una forma de entrega.")
             normalized_phone = normalize_phone(self.telefono)
             self.telefono = normalized_phone
             delivery_date = _parse_delivery_date(self.fecha_entrega)
@@ -830,6 +857,7 @@ class PublicOrderState(rx.State):
         self.order_total_display = _money_text(Decimal(self.cart_total) + self._selected_shipping_cost())
 
     def start_new_order(self) -> None:
+        self.navigation_revision += 1
         if self.is_submitting:
             return
         self.cart = []
