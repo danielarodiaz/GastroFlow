@@ -15,6 +15,7 @@ function attachPublicInteractions(root) {
     pending.element.removeAttribute("data-public-busy");
     pending.element.style.removeProperty("opacity");
     pending.element.style.removeProperty("cursor");
+    pending.status.getAnimations().forEach(animation => animation.cancel());
     pending.status.remove();
     state[kind] = null;
   };
@@ -26,7 +27,21 @@ function attachPublicInteractions(root) {
   const begin = (kind, element) => {
     const status = document.createElement("span");
     status.setAttribute("role", "status");
-    status.textContent = kind === "cart" ? " Agregando al carrito…" : " Abriendo…";
+    if (kind === "cart") {
+      status.textContent = " Agregando al carrito…";
+    } else {
+      status.setAttribute("aria-label", "Cargando");
+      Object.assign(status.style, {
+        display: "inline-block", width: "14px", height: "14px",
+        border: "2px solid currentColor", borderRightColor: "transparent",
+        borderRadius: "50%", flexShrink: "0", alignSelf: "center",
+      });
+      if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        status.animate([{transform: "rotate(0deg)"}, {transform: "rotate(360deg)"}], {
+          duration: 800, iterations: Infinity,
+        });
+      }
+    }
     element.insertAdjacentElement("afterend", status);
     element.setAttribute("aria-busy", "true");
     element.setAttribute("aria-disabled", "true");
