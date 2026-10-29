@@ -985,7 +985,7 @@ def _render_expense_form() -> None:
 
     with st.form("expense_ticket_item_form", clear_on_submit=True):
         motivo = st.text_input("Motivo")
-        marca = st.text_input("Marca")
+        marca = st.text_input("Marca (opcional)")
         descripcion = st.text_input("Descripcion")
         form_cols = st.columns(3)
         cantidad = form_cols[0].number_input("Cantidad", min_value=0.001, value=1.0, step=1.0)
@@ -1048,8 +1048,8 @@ def _add_expense_ticket_item(
     unidad: str,
     total_item: Decimal,
 ) -> bool:
-    if not motivo.strip() or not marca.strip() or not unidad.strip():
-        st.warning("Motivo, marca y unidad son obligatorios para agregar un item.")
+    if not motivo.strip() or not unidad.strip():
+        st.warning("Motivo y unidad son obligatorios para agregar un item.")
         return False
     if cantidad <= 0:
         st.warning("La cantidad debe ser mayor a cero.")

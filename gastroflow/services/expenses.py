@@ -20,7 +20,7 @@ QUANTITY_QUANT = Decimal("0.001")
 class ExpenseInput:
     fecha: date
     motivo_nombre: str
-    marca_nombre: str
+    marca_nombre: str | None
     cantidad: Decimal
     unidad_medida: str
     precio: Decimal
@@ -33,7 +33,7 @@ class ExpenseInput:
 @dataclass(frozen=True)
 class ExpenseDetailInput:
     motivo_nombre: str
-    marca_nombre: str
+    marca_nombre: str | None
     cantidad: Decimal
     unidad_medida: str
     precio_unitario: Decimal
@@ -74,11 +74,17 @@ class ExpenseService:
         )
         return self.create_expense_ticket(ticket, current_user)
 
-    def create_expense_ticket(self, data: ExpenseTicketInput, current_user: UsuarioRead) -> GastoRead:
+    def create_expense_ticket(
+        self,
+        data: ExpenseTicketInput,
+        current_user: UsuarioRead,
+        *,
+        commit: bool = True,
+    ) -> GastoRead:
         AuthService(self.session).require_owner_or_admin(current_user)
         self._validate(data)
 
-        detail_rows: list[tuple[ExpenseDetailInput, MotivoGasto, Marca, Decimal]] = []
+        detail_rows: list[tuple[ExpenseDetailInput, MotivoGasto, Marca | None, Decimal]] = []
         total = Decimal("0.00")
         for item in data.items:
             motivo = self._get_or_create_motivo(item.motivo_nombre)
@@ -103,7 +109,7 @@ class ExpenseService:
                 GastoDetalle(
                     gasto_id=gasto.id or 0,
                     motivo_gasto_id=motivo.id or 0,
-                    marca_id=marca.id or 0,
+                    marca_id=marca.id if marca else None,
                     descripcion=normalize_optional_text(item.descripcion),
                     cantidad=self._quantity(item.cantidad),
                     unidad_medida=normalize_display_text(item.unidad_medida),
@@ -111,7 +117,10 @@ class ExpenseService:
                     subtotal=subtotal,
                 )
             )
-        self.session.commit()
+        if commit:
+            self.session.commit()
+        else:
+            self.session.flush()
         self.session.refresh(gasto)
         return self._to_read(gasto)
 
@@ -128,7 +137,9 @@ class ExpenseService:
         self.session.flush()
         return motivo
 
-    def _get_or_create_marca(self, nombre: str) -> Marca:
+    def _get_or_create_marca(self, nombre: str | None) -> Marca | None:
+        if not nombre or not nombre.strip():
+            return None
         normalized = normalize_display_text(nombre)
         marca = self.session.exec(
             select(Marca).where(func.lower(Marca.nombre) == normalized.lower())
@@ -152,8 +163,6 @@ class ExpenseService:
     def _validate_detail(self, item: ExpenseDetailInput) -> None:
         if not item.motivo_nombre.strip():
             raise ValidationError("El motivo del gasto es obligatorio.")
-        if not item.marca_nombre.strip():
-            raise ValidationError("La marca del gasto es obligatoria.")
         if item.cantidad <= 0:
             raise ValidationError("La cantidad del gasto debe ser mayor a cero.")
         if not item.unidad_medida.strip():

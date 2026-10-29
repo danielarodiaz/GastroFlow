@@ -414,7 +414,7 @@ def expense_form_modal() -> rx.Component:
                         ),
                         field("Fecha", rx.input(value=ExpenseState.fecha, on_change=ExpenseState.set_fecha, placeholder="DD-MM-AAAA", max_length=10, style=input_style(), _placeholder=placeholder_style())),
                         field("Motivo", rx.input(value=ExpenseState.motivo_nombre, on_change=ExpenseState.set_motivo_nombre, placeholder="Ej: ACEITE GIRA-SOL", style=input_style(), _placeholder=placeholder_style())),
-                        field("Marca", rx.input(value=ExpenseState.marca_nombre, on_change=ExpenseState.set_marca_nombre, placeholder="Ej: AVICOLA CRUZ PAPAL", style=input_style(), _placeholder=placeholder_style())),
+                        field("Marca (opcional)", rx.input(value=ExpenseState.marca_nombre, on_change=ExpenseState.set_marca_nombre, placeholder="Ej: AVICOLA CRUZ PAPAL", style=input_style(), _placeholder=placeholder_style())),
                         rx.grid(
                             field("Cantidad", rx.input(value=ExpenseState.cantidad, on_change=ExpenseState.set_cantidad, placeholder="4,5 o 4.5", style=input_style(), _placeholder=placeholder_style())),
                             field("Unidad", rx.input(value=ExpenseState.unidad_medida, on_change=ExpenseState.set_unidad_medida, placeholder="LITROS", style=input_style(), _placeholder=placeholder_style())),

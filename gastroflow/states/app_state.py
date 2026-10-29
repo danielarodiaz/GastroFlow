@@ -732,14 +732,14 @@ class ExpenseState(rx.State):
                         detail = GastoDetalle(
                             gasto_id=gasto.id or 0,
                             motivo_gasto_id=motivo.id or 0,
-                            marca_id=marca.id or 0,
+                            marca_id=marca.id if marca else None,
                             cantidad=cantidad,
                             unidad_medida=_clean_text(self.unidad_medida),
                             precio_unitario=precio_unitario,
                             subtotal=subtotal,
                         )
                     detail.motivo_gasto_id = motivo.id or 0
-                    detail.marca_id = marca.id or 0
+                    detail.marca_id = marca.id if marca else None
                     detail.cantidad = cantidad
                     detail.unidad_medida = _clean_text(self.unidad_medida)
                     detail.precio_unitario = precio_unitario

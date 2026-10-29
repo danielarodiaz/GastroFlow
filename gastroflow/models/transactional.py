@@ -202,7 +202,7 @@ class GastoRead(GastoBase):
 class GastoDetalleBase(SQLModel):
     gasto_id: int = Field(foreign_key="gasto.id", index=True)
     motivo_gasto_id: int = Field(foreign_key="motivo_gasto.id")
-    marca_id: int = Field(foreign_key="marca.id")
+    marca_id: Optional[int] = Field(default=None, foreign_key="marca.id")
     descripcion: Optional[str] = None
     cantidad: Decimal = Field(sa_column=quantity_column())
     unidad_medida: str = Field(max_length=40)

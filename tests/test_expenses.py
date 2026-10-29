@@ -34,6 +34,32 @@ def test_expense_validation_rejects_negative_price() -> None:
         service._validate(data)
 
 
+def test_expense_validation_accepts_item_without_brand() -> None:
+    service = ExpenseService(session=None)  # type: ignore[arg-type]
+    data = ExpenseTicketInput(
+        fecha=date.today(),
+        lugar_texto="Verduleria",
+        items=[
+            ExpenseDetailInput(
+                motivo_nombre="Cebolla",
+                marca_nombre=None,
+                cantidad=Decimal("1"),
+                unidad_medida="kg",
+                precio_unitario=Decimal("1000"),
+            )
+        ],
+    )
+
+    service._validate(data)
+
+
+def test_get_or_create_brand_skips_blank_value() -> None:
+    service = ExpenseService(session=None)  # type: ignore[arg-type]
+
+    assert service._get_or_create_marca(None) is None
+    assert service._get_or_create_marca("   ") is None
+
+
 def test_expense_money_and_quantity_are_quantized() -> None:
     service = ExpenseService(session=None)  # type: ignore[arg-type]
 
