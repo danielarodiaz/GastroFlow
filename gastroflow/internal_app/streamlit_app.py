@@ -31,6 +31,7 @@ from gastroflow.models import (
     Cliente,
     Gasto,
     GastoDetalle,
+    GastoDocumento,
     Marca,
     MotivoGasto,
     Pedido,
@@ -59,6 +60,7 @@ from gastroflow.services import (
     normalize_phone,
 )
 from gastroflow.services.media_storage import save_media_bytes
+from gastroflow.services.expense_documents import ExpenseDocumentDraft, HybridExpenseDocumentReader
 from gastroflow.services.promotions import configure_promotion
 
 BRAND_LOGO_CONFIG_KEY = "brand.logo_url"
@@ -112,6 +114,9 @@ def _init_session_state() -> None:
         "show_delivered_orders": False,
         "selected_expense_id": None,
         "expense_ticket_items": [],
+        "expense_capture_draft": None,
+        "expense_capture_file": None,
+        "expense_capture_items": [],
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -513,32 +518,105 @@ def _render_production_summary(orders: list[dict[str, Any]]) -> None:
 def _render_expenses() -> None:
     st.title("Gastos")
     expenses = _load_expense_rows()
-    total_amount = sum((row["monto_total"] for row in expenses), Decimal("0.00"))
+    items = _load_expense_item_rows()
+    total_amount = sum((row["subtotal"] for row in items), Decimal("0.00"))
     metric_cols = st.columns(3)
-    metric_cols[0].metric("Tickets", len(expenses))
+    metric_cols[0].metric("Ítems", len(items))
     metric_cols[1].metric("Monto total", _money_text(total_amount))
     metric_cols[2].metric(
-        "Ticket promedio",
-        _money_text(total_amount / Decimal(len(expenses)) if expenses else Decimal("0")),
+        "Comprobantes", len(expenses),
     )
+    item_tab, ticket_tab, capture_tab = st.tabs(["Ítems", "Comprobantes", "Capturar documento"])
+    with item_tab:
+        _render_expense_item_browser(items)
+    with ticket_tab:
+        with st.expander("Carga manual", expanded=False):
+            _render_expense_form()
+        _render_expense_ticket_browser(expenses)
+    with capture_tab:
+        _render_expense_capture()
 
-    with st.expander("Nuevo gasto", expanded=False):
-        _render_expense_form()
 
-    if not expenses:
-        st.info("Todavia no hay gastos cargados.")
-        return
+def _filter_expense_items(
+    rows: list[dict[str, Any]],
+    *,
+    query: str = "",
+    places: list[str] | None = None,
+    motives: list[str] | None = None,
+    brands: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    search = " ".join(query.casefold().split())
+    return [
+        row for row in rows
+        if (not search or search in " ".join(str(row.get(key, "")) for key in (
+            "codigo", "fecha", "motivo", "marca", "descripcion", "lugar",
+            "destinatario_pago", "identificador_pago",
+        )).casefold())
+        and (not places or row["lugar"] in places)
+        and (not motives or row["motivo"] in motives)
+        and (not brands or row["marca"] in brands)
+    ]
 
-    for row in expenses:
-        with st.container(border=True):
-            cols = st.columns([1.1, 1, 2.2, 1.2, 1])
-            cols[0].markdown(f"**{row['codigo']}**")
-            cols[1].write(row["fecha"])
-            cols[2].write(row["lugar"])
-            cols[3].write(_money_text(row["monto_total"]))
-            if cols[4].button("Ver detalles", key=f"expense_detail_{row['id']}", use_container_width=True):
-                st.session_state.selected_expense_id = row["id"]
-                _show_expense_detail(row["id"])
+
+def _render_expense_item_browser(items: list[dict[str, Any]]) -> None:
+    query = st.text_input(
+        "Buscar",
+        placeholder="Producto, marca, comercio, destinatario, código u operación",
+        key="expense_item_search",
+    )
+    filter_cols = st.columns(3)
+    places = filter_cols[0].multiselect(
+        "Lugar", sorted({row["lugar"] for row in items if row["lugar"]})
+    )
+    motives = filter_cols[1].multiselect(
+        "Motivo", sorted({row["motivo"] for row in items if row["motivo"]})
+    )
+    brands = filter_cols[2].multiselect(
+        "Marca", sorted({row["marca"] for row in items if row["marca"]})
+    )
+    filtered = _filter_expense_items(
+        items, query=query, places=places, motives=motives, brands=brands
+    )
+    st.caption(
+        f"{len(filtered)} ítems · Total filtrado: "
+        f"{_money_text(sum((row['subtotal'] for row in filtered), Decimal('0.00')))}"
+    )
+    st.dataframe(
+        [{
+            "Fecha": row["fecha"],
+            "Motivo": row["motivo"],
+            "Marca": row["marca"] or "-",
+            "Cantidad": f"{row['cantidad']} {row['unidad']}",
+            "Lugar": row["lugar"],
+            "Importe": _money_text(row["subtotal"]),
+            "Comprobante": row["codigo"],
+        } for row in filtered],
+        hide_index=True,
+        use_container_width=True,
+    )
+    ticket_options = {f"{row['codigo']} · {row['fecha']} · {row['lugar']}": row["gasto_id"] for row in filtered}
+    selected = st.selectbox("Abrir comprobante", [""] + list(ticket_options), key="expense_item_ticket")
+    if selected and st.button("Ver detalle", key="expense_item_open"):
+        _show_expense_detail(ticket_options[selected])
+
+
+def _render_expense_ticket_browser(expenses: list[dict[str, Any]]) -> None:
+    search = st.text_input("Buscar comprobante", key="expense_ticket_search").casefold().strip()
+    visible = [row for row in expenses if not search or search in " ".join(str(value) for value in row.values()).casefold()]
+    st.dataframe(
+        [{
+            "Código": row["codigo"], "Fecha": row["fecha"], "Lugar": row["lugar"],
+            "Medio de pago": row["medio_pago"] or "-",
+            "Destinatario": row["destinatario_pago"] or "-",
+            "Total": _money_text(row["monto_total"]),
+        } for row in visible],
+        hide_index=True,
+        use_container_width=True,
+    )
+    options = {f"{row['codigo']} · {row['fecha']} · {row['lugar']}": row["id"] for row in visible}
+    selected = st.selectbox("Seleccionar comprobante", [""] + list(options), key="expense_ticket_open")
+    if selected and st.button("Ver comprobante", key="expense_ticket_open_button"):
+        _show_expense_detail(options[selected])
 
 
 def _render_catalog() -> None:
@@ -982,6 +1060,17 @@ def _render_expense_form() -> None:
     header_cols = st.columns([1, 2])
     fecha = header_cols[0].date_input("Fecha", key="expense_ticket_date", format="DD-MM-YYYY")
     lugar = header_cols[1].text_input("Lugar", key="expense_ticket_place")
+    payment_cols = st.columns(3)
+    medio_pago = payment_cols[0].selectbox(
+        "Medio de pago", ["", "EFECTIVO", "TRANSFERENCIA", "TARJETA", "OTRO"],
+        key="expense_ticket_payment_method",
+    )
+    destinatario_pago = payment_cols[1].text_input(
+        "Destinatario del pago (opcional)", key="expense_ticket_payment_recipient"
+    )
+    identificador_pago = payment_cols[2].text_input(
+        "ID de operación (opcional)", key="expense_ticket_payment_id"
+    )
 
     with st.form("expense_ticket_item_form", clear_on_submit=True):
         motivo = st.text_input("Motivo")
@@ -1025,6 +1114,9 @@ def _render_expense_form() -> None:
                             )
                             for item in st.session_state.expense_ticket_items
                         ],
+                        medio_pago=medio_pago or None,
+                        destinatario_pago=destinatario_pago or None,
+                        identificador_pago=identificador_pago or None,
                     ),
                     _current_user(),
                 )
@@ -1037,6 +1129,181 @@ def _render_expense_form() -> None:
     if action_cols[1].button("Limpiar ticket", use_container_width=True, disabled=not st.session_state.expense_ticket_items):
         st.session_state.expense_ticket_items = []
         st.rerun(scope="fragment")
+
+
+def _render_expense_capture() -> None:
+    st.caption(
+        "Subí una foto o PDF. El QR y el texto se leen localmente con Tesseract; "
+        "nada se guarda hasta que confirmes."
+    )
+    uploaded = st.file_uploader(
+        "Comprobante",
+        type=["pdf", "png", "jpg", "jpeg"],
+        key="expense_document_upload",
+    )
+    if uploaded is not None:
+        content = uploaded.getvalue()
+        content_type = uploaded.type or mimetypes.guess_type(uploaded.name)[0] or "application/octet-stream"
+        if content_type.startswith("image/"):
+            st.image(content, caption=uploaded.name, width=520)
+        else:
+            st.caption(f"PDF seleccionado: {uploaded.name}")
+        if st.button("Analizar documento", type="primary", key="expense_analyze_document"):
+            digest = hashlib.sha256(content).hexdigest()
+            try:
+                with Session(engine) as session:
+                    duplicate = session.exec(
+                        select(GastoDocumento).where(GastoDocumento.contenido_sha256 == digest)
+                    ).first()
+                if duplicate is not None:
+                    st.error("Este documento ya está asociado a un gasto.")
+                else:
+                    with st.spinner("Leyendo QR y texto localmente con Tesseract..."):
+                        draft = HybridExpenseDocumentReader().analyze(content, content_type)
+                    st.session_state.expense_capture_draft = draft
+                    st.session_state.expense_capture_file = {
+                        "name": uploaded.name,
+                        "content": content,
+                        "content_type": content_type,
+                        "sha256": digest,
+                    }
+                    st.session_state.expense_capture_items = [
+                        {
+                            "Motivo": item.motivo,
+                            "Marca": item.marca or "",
+                            "Cantidad": float(item.cantidad),
+                            "Unidad": item.unidad,
+                            "Subtotal": float(item.subtotal),
+                        }
+                        for item in draft.items
+                    ]
+                    st.rerun()
+            except Exception as exc:
+                _render_action_error("No se pudo analizar el documento.", exc)
+
+    draft = st.session_state.get("expense_capture_draft")
+    file_data = st.session_state.get("expense_capture_file")
+    if not isinstance(draft, ExpenseDocumentDraft) or not file_data:
+        st.info("El análisis aparecerá aquí para que puedas corregirlo antes de guardar.")
+        return
+
+    st.subheader("Revisar propuesta")
+    if draft.qr_contenido:
+        st.success("QR detectado localmente.")
+    for warning in draft.advertencias:
+        st.warning(warning)
+    header_cols = st.columns([1, 2, 1])
+    expense_date = header_cols[0].date_input(
+        "Fecha", value=draft.fecha or date.today(), key="expense_capture_date", format="DD-MM-YYYY"
+    )
+    place = header_cols[1].text_input(
+        "Lugar de compra", value=draft.lugar, key="expense_capture_place",
+        help="Es el comercio o lugar donde compraste, no necesariamente el titular de la cuenta.",
+    )
+    expected_total = header_cols[2].number_input(
+        "Total del documento", min_value=0.0, value=float(draft.monto_total or 0), step=100.0,
+        key="expense_capture_total",
+    )
+    payment_cols = st.columns(3)
+    payment_method = payment_cols[0].selectbox(
+        "Medio de pago", ["TRANSFERENCIA", "EFECTIVO", "TARJETA", "OTRO"],
+        index=0 if draft.medio_pago == "TRANSFERENCIA" else 1,
+        key="expense_capture_payment_method",
+    )
+    payment_recipient = payment_cols[1].text_input(
+        "Destinatario del pago", value=draft.destinatario_pago or "", key="expense_capture_recipient"
+    )
+    payment_id = payment_cols[2].text_input(
+        "ID de operación", value=draft.identificador_pago or "", key="expense_capture_operation"
+    )
+    st.caption("La descripción del motivo se separa en ítems editables. Corregí cualquier dato dudoso.")
+    edited_items = st.data_editor(
+        st.session_state.expense_capture_items,
+        num_rows="dynamic",
+        hide_index=True,
+        use_container_width=True,
+        key="expense_capture_item_editor",
+        column_config={
+            "Cantidad": st.column_config.NumberColumn(min_value=0.001, step=0.001),
+            "Subtotal": st.column_config.NumberColumn(min_value=0.0, step=100.0, format="$ %.2f"),
+        },
+    )
+    calculated_total = sum((Decimal(str(row.get("Subtotal") or 0)) for row in edited_items), Decimal("0"))
+    st.write(f"Total de ítems: {_money_text(calculated_total)}")
+    action_cols = st.columns([1, 1, 3])
+    if action_cols[0].button("Confirmar gasto", type="primary", key="expense_capture_confirm"):
+        if not place.strip():
+            st.error("Indicá el lugar de compra.")
+            return
+        if not edited_items:
+            st.error("Agregá al menos un ítem.")
+            return
+        if calculated_total.quantize(Decimal("0.01")) != Decimal(str(expected_total)).quantize(Decimal("0.01")):
+            st.error("El total de los ítems debe coincidir con el total del documento.")
+            return
+        try:
+            details = []
+            for row in edited_items:
+                quantity = Decimal(str(row.get("Cantidad") or 0))
+                subtotal = Decimal(str(row.get("Subtotal") or 0)).quantize(Decimal("0.01"))
+                details.append(ExpenseDetailInput(
+                    motivo_nombre=str(row.get("Motivo") or ""),
+                    marca_nombre=str(row.get("Marca") or "") or None,
+                    cantidad=quantity,
+                    unidad_medida=str(row.get("Unidad") or "UNIDAD"),
+                    precio_unitario=(subtotal / quantity).quantize(Decimal("0.01")),
+                    subtotal=subtotal,
+                ))
+            with Session(engine) as session:
+                expense = ExpenseService(session).create_expense_ticket(
+                    ExpenseTicketInput(
+                        fecha=expense_date,
+                        lugar_texto=place,
+                        items=details,
+                        medio_pago=payment_method,
+                        destinatario_pago=payment_recipient or None,
+                        identificador_pago=payment_id or None,
+                        observaciones="Carga asistida desde documento; datos confirmados por el usuario.",
+                    ),
+                    _current_user(),
+                    commit=False,
+                )
+                safe_name = "".join(
+                    char for char in file_data["name"] if char.isalnum() or char in {".", "-", "_"}
+                )
+                stored_url = save_media_bytes(
+                    content=file_data["content"], folder="gastos",
+                    filename=f"{file_data['sha256'][:12]}_{safe_name}",
+                    content_type=file_data["content_type"],
+                )
+                session.add(GastoDocumento(
+                    gasto_id=expense.id,
+                    nombre_archivo=file_data["name"],
+                    archivo_url=stored_url,
+                    contenido_sha256=file_data["sha256"],
+                    tipo_contenido=file_data["content_type"],
+                    estado="confirmado",
+                    motor_lectura=draft.motor_lectura,
+                    qr_contenido=None,
+                    texto_extraido=None,
+                    datos_extraidos=draft.to_json(),
+                    confianza=draft.confianza,
+                ))
+                session.commit()
+            st.session_state.expense_capture_draft = None
+            st.session_state.expense_capture_file = None
+            st.session_state.expense_capture_items = []
+            _load_expense_rows.clear()
+            _load_expense_item_rows.clear()
+            st.success(f"Gasto {expense.codigo} confirmado.")
+            st.rerun()
+        except Exception as exc:
+            _render_action_error("No se pudo guardar el gasto leído.", exc)
+    if action_cols[1].button("Descartar", key="expense_capture_discard"):
+        st.session_state.expense_capture_draft = None
+        st.session_state.expense_capture_file = None
+        st.session_state.expense_capture_items = []
+        st.rerun()
 
 
 def _add_expense_ticket_item(
@@ -1255,9 +1522,44 @@ def _load_expense_rows() -> list[dict[str, Any]]:
             "codigo": gasto.codigo,
             "fecha": _date_text(gasto.fecha),
             "lugar": gasto.lugar_texto,
+            "medio_pago": gasto.medio_pago or "",
+            "destinatario_pago": gasto.destinatario_pago or "",
+            "identificador_pago": gasto.identificador_pago or "",
             "monto_total": gasto.monto_total,
         }
         for gasto in gastos
+    ]
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def _load_expense_item_rows() -> list[dict[str, Any]]:
+    with Session(engine) as session:
+        result = session.exec(
+            select(GastoDetalle, Gasto, MotivoGasto, Marca)
+            .join(Gasto, Gasto.id == GastoDetalle.gasto_id)
+            .join(MotivoGasto, MotivoGasto.id == GastoDetalle.motivo_gasto_id)
+            .outerjoin(Marca, Marca.id == GastoDetalle.marca_id)
+            .order_by(Gasto.fecha.desc(), Gasto.id.desc(), GastoDetalle.id)
+        ).all()
+    return [
+        {
+            "detalle_id": detail.id or 0,
+            "gasto_id": gasto.id or 0,
+            "codigo": gasto.codigo,
+            "fecha": _date_text(gasto.fecha),
+            "fecha_raw": gasto.fecha,
+            "motivo": motivo.nombre,
+            "marca": marca.nombre if marca else "",
+            "descripcion": detail.descripcion or "",
+            "cantidad": detail.cantidad,
+            "unidad": detail.unidad_medida,
+            "subtotal": detail.subtotal,
+            "lugar": gasto.lugar_texto,
+            "medio_pago": gasto.medio_pago or "",
+            "destinatario_pago": gasto.destinatario_pago or "",
+            "identificador_pago": gasto.identificador_pago or "",
+        }
+        for detail, gasto, motivo, marca in result
     ]
 
 
@@ -2070,12 +2372,21 @@ def _render_expense_detail(expense_id: int) -> None:
             st.error("Gasto inexistente.")
             return
         details = session.exec(select(GastoDetalle).where(GastoDetalle.gasto_id == expense_id)).all()
+        documents = session.exec(
+            select(GastoDocumento).where(GastoDocumento.gasto_id == expense_id)
+        ).all()
         motivos = {motivo.id: motivo for motivo in session.exec(select(MotivoGasto)).all()}
         marcas = {marca.id: marca for marca in session.exec(select(Marca)).all()}
 
     st.subheader(gasto.codigo)
     st.write(f"Fecha: {_date_text(gasto.fecha)}")
     st.write(f"Lugar: {gasto.lugar_texto}")
+    if gasto.medio_pago:
+        st.write(f"Medio de pago: {gasto.medio_pago}")
+    if gasto.destinatario_pago:
+        st.write(f"Destinatario del pago: {gasto.destinatario_pago}")
+    if gasto.identificador_pago:
+        st.write(f"ID de operación: {gasto.identificador_pago}")
     rows = [
         {
             "motivo": motivos[detail.motivo_gasto_id].nombre if detail.motivo_gasto_id in motivos else "",
@@ -2090,6 +2401,13 @@ def _render_expense_detail(expense_id: int) -> None:
     ]
     st.dataframe(rows, hide_index=True, use_container_width=True)
     st.write(f"Total: {_money_text(gasto.monto_total)}")
+    if documents:
+        st.markdown("**Documentos asociados**")
+        for document in documents:
+            st.caption(
+                f"{document.nombre_archivo} · {document.motor_lectura or 'carga manual'} · "
+                f"estado {document.estado}"
+            )
 
 
 def _transition_order(order_id: int, next_state: EstadoPedido) -> None:

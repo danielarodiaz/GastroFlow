@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     supabase_key: str | None = None
     supabase_service_role_key: str | None = None
     supabase_storage_bucket: str = "gastroflow-media"
+    azure_document_intelligence_endpoint: str | None = None
+    azure_document_intelligence_key: str | None = None
+    azure_document_intelligence_model: str = "prebuilt-invoice"
+    expense_ocr_engine: str = "tesseract"
+    tesseract_language: str = "spa"
 
     @field_validator("database_url")
     @classmethod

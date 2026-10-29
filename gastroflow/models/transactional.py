@@ -2,7 +2,7 @@ from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Column, Enum as SAEnum, String, Text
+from sqlalchemy import Column, Enum as SAEnum, Numeric, String, Text
 from sqlmodel import Field, SQLModel
 
 from gastroflow.domain.enums import EstadoPedido, FormaPago, RolUsuario
@@ -179,6 +179,9 @@ class GastoBase(SQLModel):
     lugar_lat: Optional[Decimal] = Field(default=None, sa_column=coordinate_column())
     lugar_lng: Optional[Decimal] = Field(default=None, sa_column=coordinate_column())
     observaciones: Optional[str] = None
+    medio_pago: Optional[str] = Field(default=None, max_length=40)
+    destinatario_pago: Optional[str] = Field(default=None, max_length=160)
+    identificador_pago: Optional[str] = Field(default=None, index=True, max_length=120)
     monto_total: Decimal = Field(sa_column=money_column())
 
 
@@ -220,3 +223,25 @@ class GastoDetalleCreate(GastoDetalleBase):
 
 class GastoDetalleRead(GastoDetalleBase):
     id: int
+
+
+class GastoDocumento(IdMixin, table=True):
+    __tablename__ = "gasto_documento"
+
+    gasto_id: Optional[int] = Field(
+        default=None, foreign_key="gasto.id", ondelete="SET NULL", index=True
+    )
+    nombre_archivo: str = Field(max_length=255)
+    archivo_url: str = Field(max_length=500)
+    contenido_sha256: str = Field(index=True, unique=True, max_length=64)
+    tipo_contenido: str = Field(max_length=120)
+    estado: str = Field(default="confirmado", max_length=30)
+    motor_lectura: Optional[str] = Field(default=None, max_length=50)
+    qr_contenido: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    texto_extraido: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    datos_extraidos: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    confianza: Optional[Decimal] = Field(
+        default=None, sa_column=Column(Numeric(5, 4), nullable=True)
+    )
+    created_at: datetime = timestamp_field()
+    updated_at: datetime = timestamp_field()

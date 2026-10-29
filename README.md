@@ -42,7 +42,9 @@ El proyecto está desarrollado **100% en Python**, priorizando una arquitectura 
 * **Panel Operativo (Dueño y Admin):**
   * Vista de pedidos agrupada por estados (`PEDIDO`, `PENDIENTE_CONFIRMACION`, `EN_PROCESO`, `ENTREGADO`, `CANCELADO`).
   * Botones de un solo toque para transición de estados sin recargar pantalla.
-  * Formulario de gastos con autocompletado y creación en caliente (*on-the-fly*) de motivos y marcas.
+  * Gastos navegables por ítem o comprobante, con búsqueda por producto, marca, lugar y datos de pago.
+  * Captura asistida de fotos/PDF: QR local + Tesseract OCR, siempre con revisión humana.
+  * Lugar de compra separado del destinatario de una transferencia personal.
 * **Panel de Configuración (Solo Admin):**
   * CRUD de categorías, productos, promociones, reglas mayoristas, reglas de combinación (`combo_regla`) y zonas de envío.
 
@@ -117,5 +119,24 @@ Fase 7 completada:
 * CRUD administrativo generico para todas las tablas del modelo.
 * Whitelist explicita de tablas administrables.
 * Manejo especial de `usuario`: password de entrada hasheada y `password_hash` nunca serializado.
+
+## Lectura asistida de gastos
+
+La aplicación interna usa Tesseract OCR en español de forma local y sin servicios pagos. Configurar:
+
+```env
+EXPENSE_OCR_ENGINE=tesseract
+TESSERACT_LANGUAGE=spa
+```
+
+El QR también se intenta leer localmente. `AzureDocumentReader` conserva el mismo contrato y queda
+disponible como integración opcional futura, pero no se utiliza ni requiere credenciales. Los datos
+extraídos son una propuesta editable: el gasto sólo se confirma cuando los ítems coinciden con el total.
+Para habilitar el modelo documental ejecutar
+`python -m alembic upgrade head` después de desplegar la revisión `0015_expense_documents_payments`.
+
+En Streamlit Community Cloud, `packages.txt` instala el motor `tesseract-ocr` y el modelo español.
+En Windows local se debe instalar Tesseract OCR con el idioma Spanish y reiniciar la terminal; las
+dependencias Python se instalan con `pip install -r requirements-internal.txt`.
 
 El proyecto debe esperar confirmacion antes de avanzar a la Fase 8.

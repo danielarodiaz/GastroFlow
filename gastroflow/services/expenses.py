@@ -28,6 +28,9 @@ class ExpenseInput:
     descripcion: str | None = None
     lugar_lat: Decimal | None = None
     lugar_lng: Decimal | None = None
+    medio_pago: str | None = None
+    destinatario_pago: str | None = None
+    identificador_pago: str | None = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,9 @@ class ExpenseTicketInput:
     lugar_lat: Decimal | None = None
     lugar_lng: Decimal | None = None
     observaciones: str | None = None
+    medio_pago: str | None = None
+    destinatario_pago: str | None = None
+    identificador_pago: str | None = None
 
 
 class ExpenseService:
@@ -71,6 +77,9 @@ class ExpenseService:
                     descripcion=data.descripcion,
                 )
             ],
+            medio_pago=data.medio_pago,
+            destinatario_pago=data.destinatario_pago,
+            identificador_pago=data.identificador_pago,
         )
         return self.create_expense_ticket(ticket, current_user)
 
@@ -100,6 +109,9 @@ class ExpenseService:
             lugar_lat=data.lugar_lat,
             lugar_lng=data.lugar_lng,
             observaciones=data.observaciones.strip() if data.observaciones else None,
+            medio_pago=normalize_optional_text(data.medio_pago),
+            destinatario_pago=normalize_optional_text(data.destinatario_pago),
+            identificador_pago=normalize_optional_text(data.identificador_pago),
             monto_total=self._money(total),
         )
         self.session.add(gasto)
@@ -195,6 +207,9 @@ class ExpenseService:
             lugar_lat=gasto.lugar_lat,
             lugar_lng=gasto.lugar_lng,
             observaciones=gasto.observaciones,
+            medio_pago=gasto.medio_pago,
+            destinatario_pago=gasto.destinatario_pago,
+            identificador_pago=gasto.identificador_pago,
             monto_total=gasto.monto_total,
             created_at=gasto.created_at,
             updated_at=gasto.updated_at,

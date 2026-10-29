@@ -33,6 +33,8 @@ SUPABASE_URL = "https://<project-ref>.supabase.co"
 SUPABASE_SERVICE_ROLE_KEY = "<service-role-key>"
 SUPABASE_STORAGE_BUCKET = "gastroflow-media"
 GOOGLE_MAPS_API_KEY = ""
+EXPENSE_OCR_ENGINE = "tesseract"
+TESSERACT_LANGUAGE = "spa"
 STORE_NAME = "Las Pizzas De Alejo"
 PIZZERIA_WHATSAPP_PHONE = ""
 TRANSFER_TITULAR = "Alvaro Alejo Marquez"
@@ -50,9 +52,10 @@ Incluido:
 - listado de pedidos;
 - modal de detalle de pedidos;
 - cambio de estado de pedidos;
-- listado de gastos tipo ticket;
+- listado de gastos por ítem y por comprobante;
 - modal de detalle de gastos;
 - carga de gasto con varios items en un solo ticket.
+- captura asistida de PDF/imagen con QR local y Tesseract OCR en español;
 - listado y edicion basica de categorias;
 - listado y edicion basica de productos por categoria;
 - listado, alta y edicion de promociones.

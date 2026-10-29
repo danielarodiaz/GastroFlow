@@ -14,6 +14,7 @@ from gastroflow.internal_app.streamlit_app import (
     _date_text,
     _decode_auth_token,
     _filter_delivered_orders,
+    _filter_expense_items,
     _is_pizza_item,
     _normalize_date_range,
     _prioritize_pending_special_orders,
@@ -41,6 +42,25 @@ from gastroflow.models import (
 
 def test_internal_dates_use_day_month_year() -> None:
     assert _date_text(date(2026, 10, 14)) == "14-10-2026"
+
+
+def test_expense_item_search_includes_payment_recipient_and_filters() -> None:
+    rows = [
+        {
+            "codigo": "GAS-0110", "fecha": "21-10-2026", "motivo": "Albahaca",
+            "marca": "", "descripcion": "", "lugar": "Verdulería Sofia",
+            "destinatario_pago": "Franco Ezequiel Suarez",
+            "identificador_pago": "op-123", "subtotal": Decimal("5000"),
+        },
+        {
+            "codigo": "GAS-0111", "fecha": "22-10-2026", "motivo": "Nafta",
+            "marca": "YPF", "descripcion": "", "lugar": "YPF",
+            "destinatario_pago": "", "identificador_pago": "", "subtotal": Decimal("30000"),
+        },
+    ]
+
+    assert [row["codigo"] for row in _filter_expense_items(rows, query="Franco")] == ["GAS-0110"]
+    assert [row["codigo"] for row in _filter_expense_items(rows, motives=["Nafta"])] == ["GAS-0111"]
 
 
 def test_production_summary_groups_products_and_excludes_finished_orders() -> None:
