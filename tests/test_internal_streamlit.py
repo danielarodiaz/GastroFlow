@@ -20,6 +20,7 @@ from gastroflow.internal_app.streamlit_app import (
     _filter_expense_tickets,
     _is_pizza_item,
     _normalize_date_range,
+    _parse_expense_money,
     _prioritize_pending_special_orders,
     _sync_promotion_products,
     _update_order,
@@ -74,12 +75,27 @@ def test_expense_capture_helpers_complete_manual_fallback() -> None:
         "Descripción": "Dato corregido manualmente",
         "Cantidad": 5,
         "Unidad": "KG",
-        "Subtotal": 41950.91,
+        "Subtotal": "41950,91",
     }])
 
     assert details[0].motivo_nombre == "Queso cremoso"
     assert details[0].marca_nombre == "D-70"
     assert details[0].precio_unitario == Decimal("8390.18")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("7561,40", Decimal("7561.40")),
+        ("7561.40", Decimal("7561.40")),
+        ("$ 7.561,40", Decimal("7561.40")),
+        ("$ 7,561.40", Decimal("7561.40")),
+    ],
+)
+def test_expense_money_editor_accepts_comma_or_point(
+    raw: str, expected: Decimal
+) -> None:
+    assert _parse_expense_money(raw, "Subtotal") == expected
 
 
 def test_expense_ticket_search_uses_one_result_source_for_table_and_selector() -> None:

@@ -11,6 +11,7 @@ import re
 import time as time_module
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -118,6 +119,7 @@ def _init_session_state() -> None:
         "expense_capture_draft": None,
         "expense_capture_file": None,
         "expense_capture_items": [],
+        "expense_capture_version": 0,
         "expense_delete_id": None,
         "expense_action_message": "",
     }
@@ -522,7 +524,7 @@ def _render_expenses() -> None:
     st.title("Gastos")
     action_message = st.session_state.pop("expense_action_message", "")
     if action_message:
-        st.success(action_message)
+        st.toast(action_message, icon="✅")
     expenses = _load_expense_rows()
     items = _load_expense_item_rows()
     total_amount = sum((row["subtotal"] for row in items), Decimal("0.00"))
@@ -678,7 +680,7 @@ def _load_expense_for_edit(expense_id: int) -> tuple[Gasto, list[dict[str, Any]]
             "Descripción": detail.descripcion or "",
             "Cantidad": float(detail.cantidad),
             "Unidad": detail.unidad_medida,
-            "Subtotal": float(detail.subtotal),
+            "Subtotal": f"{detail.subtotal:.2f}",
         }
         for detail in details
     ]
@@ -737,8 +739,8 @@ def _render_expense_editor(expense_id: int) -> None:
             key=f"expense_edit_items_{expense_id}",
             column_config={
                 "Cantidad": st.column_config.NumberColumn(min_value=0.001, step=0.001),
-                "Subtotal": st.column_config.NumberColumn(
-                    min_value=0.0, step=100.0, format="$ %.2f"
+                "Subtotal": st.column_config.TextColumn(
+                    help="Acepta decimales con coma o punto. Ej.: 7561,40"
                 ),
             },
         )
@@ -1314,6 +1316,7 @@ def _render_expense_form() -> None:
 
 
 def _render_expense_capture() -> None:
+    capture_version = int(st.session_state.expense_capture_version)
     st.caption(
         "Subí una foto o PDF. El QR y el texto se leen localmente con Tesseract; "
         "nada se guarda hasta que confirmes."
@@ -1321,7 +1324,7 @@ def _render_expense_capture() -> None:
     uploaded = st.file_uploader(
         "Comprobante",
         type=["pdf", "png", "jpg", "jpeg"],
-        key="expense_document_upload",
+        key=f"expense_document_upload_{capture_version}",
     )
     if uploaded is not None:
         content = uploaded.getvalue()
@@ -1330,7 +1333,11 @@ def _render_expense_capture() -> None:
             st.image(content, caption=uploaded.name, width=520)
         else:
             st.caption(f"PDF seleccionado: {uploaded.name}")
-        if st.button("Analizar documento", type="primary", key="expense_analyze_document"):
+        if st.button(
+            "Analizar documento",
+            type="primary",
+            key=f"expense_analyze_document_{capture_version}",
+        ):
             digest = hashlib.sha256(content).hexdigest()
             try:
                 with Session(engine) as session:
@@ -1367,12 +1374,12 @@ def _render_expense_capture() -> None:
                             "Descripción": item.descripcion or "",
                             "Cantidad": float(item.cantidad),
                             "Unidad": item.unidad,
-                            "Subtotal": float(item.subtotal),
+                            "Subtotal": f"{item.subtotal:.2f}",
                         }
                         for item in draft.items
                     ] or [{
                         "Motivo": "", "Marca": "", "Descripción": "",
-                        "Cantidad": 1.0, "Unidad": "UNIDAD", "Subtotal": 0.0,
+                        "Cantidad": 1.0, "Unidad": "UNIDAD", "Subtotal": "0.00",
                     }]
                     st.rerun()
             except Exception as exc:
@@ -1394,15 +1401,19 @@ def _render_expense_capture() -> None:
             st.text(draft.texto_extraido)
     header_cols = st.columns([1, 2, 1])
     expense_date = header_cols[0].date_input(
-        "Fecha", value=draft.fecha or date.today(), key="expense_capture_date", format="DD-MM-YYYY"
+        "Fecha", value=draft.fecha or date.today(),
+        key=f"expense_capture_date_{capture_version}", format="DD-MM-YYYY"
     )
     place = header_cols[1].text_input(
-        "Lugar de compra", value=draft.lugar, key="expense_capture_place",
+        "Lugar de compra", value=draft.lugar,
+        key=f"expense_capture_place_{capture_version}",
         help="Es el comercio o lugar donde compraste, no necesariamente el titular de la cuenta.",
     )
-    expected_total = header_cols[2].number_input(
-        "Total del documento", min_value=0.0, value=float(draft.monto_total or 0), step=100.0,
-        key="expense_capture_total",
+    expected_total_text = header_cols[2].text_input(
+        "Total del documento",
+        value=f"{(draft.monto_total or Decimal('0.00')):.2f}",
+        key=f"expense_capture_total_{capture_version}",
+        help="Acepta decimales con coma o punto.",
     )
     payment_cols = st.columns(3)
     payment_options = ["", "TRANSFERENCIA", "EFECTIVO", "TARJETA", "OTRO"]
@@ -1410,13 +1421,15 @@ def _render_expense_capture() -> None:
     payment_method = payment_cols[0].selectbox(
         "Medio de pago", payment_options,
         index=payment_options.index(current_payment) if current_payment in payment_options else 0,
-        key="expense_capture_payment_method",
+        key=f"expense_capture_payment_method_{capture_version}",
     )
     payment_recipient = payment_cols[1].text_input(
-        "Destinatario del pago", value=draft.destinatario_pago or "", key="expense_capture_recipient"
+        "Destinatario del pago", value=draft.destinatario_pago or "",
+        key=f"expense_capture_recipient_{capture_version}"
     )
     payment_id = payment_cols[2].text_input(
-        "ID de operación", value=draft.identificador_pago or "", key="expense_capture_operation"
+        "ID de operación", value=draft.identificador_pago or "",
+        key=f"expense_capture_operation_{capture_version}"
     )
     st.caption("La descripción del motivo se separa en ítems editables. Corregí cualquier dato dudoso.")
     edited_items = st.data_editor(
@@ -1424,29 +1437,47 @@ def _render_expense_capture() -> None:
         num_rows="dynamic",
         hide_index=True,
         use_container_width=True,
-        key="expense_capture_item_editor",
+        key=f"expense_capture_item_editor_{capture_version}",
         column_config={
             "Motivo": st.column_config.TextColumn(required=True),
             "Descripción": st.column_config.TextColumn(),
             "Cantidad": st.column_config.NumberColumn(min_value=0.001, step=0.001),
             "Unidad": st.column_config.TextColumn(required=True),
-            "Subtotal": st.column_config.NumberColumn(min_value=0.0, step=100.0, format="$ %.2f"),
+            "Subtotal": st.column_config.TextColumn(
+                help="Acepta decimales con coma o punto. Ej.: 7561,40"
+            ),
         },
     )
-    calculated_total = sum(
-        (Decimal(str(row.get("Subtotal") or 0)) for row in _editor_rows(edited_items)),
-        Decimal("0"),
-    )
-    st.write(f"Total de ítems: {_money_text(calculated_total)}")
+    try:
+        calculated_total = sum(
+            (
+                _parse_expense_money(row.get("Subtotal"), "Subtotal")
+                for row in _editor_rows(edited_items)
+            ),
+            Decimal("0.00"),
+        )
+        expected_total = _parse_expense_money(expected_total_text, "Total del documento")
+        st.write(f"Total de ítems: {_money_text(calculated_total)}")
+        amounts_are_valid = True
+    except ValidationError as exc:
+        st.warning(str(exc))
+        calculated_total = Decimal("0.00")
+        expected_total = Decimal("0.00")
+        amounts_are_valid = False
     action_cols = st.columns([1, 1, 3])
-    if action_cols[0].button("Confirmar gasto", type="primary", key="expense_capture_confirm"):
+    if action_cols[0].button(
+        "Confirmar análisis", type="primary", key=f"expense_capture_confirm_{capture_version}"
+    ):
         if not place.strip():
             st.error("Indicá el lugar de compra.")
             return
-        if not edited_items:
+        if not _editor_rows(edited_items):
             st.error("Agregá al menos un ítem.")
             return
-        if calculated_total.quantize(Decimal("0.01")) != Decimal(str(expected_total)).quantize(Decimal("0.01")):
+        if not amounts_are_valid:
+            st.error("Corregí los importes antes de confirmar.")
+            return
+        if calculated_total != expected_total:
             st.error("El total de los ítems debe coincidir con el total del documento.")
             return
         try:
@@ -1490,17 +1521,62 @@ def _render_expense_capture() -> None:
             st.session_state.expense_capture_draft = None
             st.session_state.expense_capture_file = None
             st.session_state.expense_capture_items = []
+            st.session_state.expense_capture_version += 1
             _load_expense_rows.clear()
             _load_expense_item_rows.clear()
-            st.success(f"Gasto {expense.codigo} confirmado.")
+            st.session_state.expense_action_message = (
+                f"{expense.codigo} guardado correctamente."
+            )
             st.rerun()
         except Exception as exc:
             _render_action_error("No se pudo guardar el gasto leído.", exc)
-    if action_cols[1].button("Descartar", key="expense_capture_discard"):
+    if action_cols[1].button(
+        "Descartar", key=f"expense_capture_discard_{capture_version}"
+    ):
         st.session_state.expense_capture_draft = None
         st.session_state.expense_capture_file = None
         st.session_state.expense_capture_items = []
+        st.session_state.expense_capture_version += 1
         st.rerun()
+
+
+def _parse_expense_money(value: Any, field_name: str = "Importe") -> Decimal:
+    if isinstance(value, Decimal):
+        amount = value
+    else:
+        raw = str(value if value is not None else "").strip()
+        raw = raw.replace("$", "").replace("\u00a0", "").replace(" ", "")
+        if not raw:
+            raise ValidationError(f"{field_name}: ingresá un importe.")
+        raw = re.sub(r"[^0-9,.-]", "", raw)
+        if "," in raw and "." in raw:
+            decimal_separator = "," if raw.rfind(",") > raw.rfind(".") else "."
+            thousands_separator = "." if decimal_separator == "," else ","
+            raw = raw.replace(thousands_separator, "")
+            raw = raw.replace(decimal_separator, ".")
+        elif "," in raw:
+            if raw.count(",") > 1:
+                integer, decimals = raw.rsplit(",", 1)
+                raw = integer.replace(",", "") + (f".{decimals}" if len(decimals) <= 2 else decimals)
+            elif len(raw.rsplit(",", 1)[1]) == 3:
+                raw = raw.replace(",", "")
+            else:
+                raw = raw.replace(",", ".")
+        elif raw.count(".") > 1:
+            integer, decimals = raw.rsplit(".", 1)
+            raw = integer.replace(".", "") + (f".{decimals}" if len(decimals) <= 2 else decimals)
+        elif "." in raw and len(raw.rsplit(".", 1)[1]) == 3:
+            raw = raw.replace(".", "")
+        try:
+            amount = Decimal(raw)
+        except Exception as exc:
+            raise ValidationError(
+                f"{field_name}: usá un importe válido, por ejemplo 7561,40."
+            ) from exc
+    amount = amount.quantize(Decimal("0.01"))
+    if amount < 0:
+        raise ValidationError(f"{field_name}: el importe no puede ser negativo.")
+    return amount
 
 
 def _expense_details_from_editor(edited_items: Any) -> list[ExpenseDetailInput]:
@@ -1512,15 +1588,13 @@ def _expense_details_from_editor(edited_items: Any) -> list[ExpenseDetailInput]:
         motive = " ".join(str(row.get("Motivo") or "").split())
         unit = " ".join(str(row.get("Unidad") or "").split())
         quantity = Decimal(str(row.get("Cantidad") or 0))
-        subtotal = Decimal(str(row.get("Subtotal") or 0)).quantize(Decimal("0.01"))
+        subtotal = _parse_expense_money(row.get("Subtotal"), "Subtotal")
         if not motive:
             raise ValidationError("Todos los ítems deben tener motivo.")
         if not unit:
             raise ValidationError("Todos los ítems deben tener unidad.")
         if quantity <= 0:
             raise ValidationError("Todas las cantidades deben ser mayores a cero.")
-        if subtotal < 0:
-            raise ValidationError("Los subtotales no pueden ser negativos.")
         details.append(ExpenseDetailInput(
             motivo_nombre=motive,
             marca_nombre=" ".join(str(row.get("Marca") or "").split()) or None,
@@ -2648,12 +2722,57 @@ def _render_expense_detail(expense_id: int) -> None:
     st.dataframe(rows, hide_index=True, use_container_width=True)
     st.write(f"Total: {_money_text(gasto.monto_total)}")
     if documents:
-        st.markdown("**Documentos asociados**")
-        for document in documents:
-            st.caption(
-                f"{document.nombre_archivo} · {document.motor_lectura or 'carga manual'} · "
-                f"estado {document.estado}"
-            )
+        with st.expander(f"Documentos asociados ({len(documents)})"):
+            for index, document in enumerate(documents):
+                if index:
+                    st.divider()
+                _render_expense_document(document)
+
+
+def _render_expense_document(document: GastoDocumento) -> None:
+    st.markdown(f"**{document.nombre_archivo}**")
+    st.caption(
+        f"{document.motor_lectura or 'carga manual'} · estado {document.estado}"
+    )
+    source = document.archivo_url.strip()
+    content_type = document.tipo_contenido.casefold()
+    is_image = content_type.startswith("image/")
+    is_pdf = content_type == "application/pdf" or source.casefold().endswith(".pdf")
+
+    if source.startswith(("http://", "https://")):
+        try:
+            if is_image:
+                st.image(source, caption=document.nombre_archivo, use_container_width=True)
+            elif is_pdf:
+                st.components.v1.iframe(source, height=650, scrolling=True)
+        except Exception:
+            st.info("La vista previa no está disponible; abrí el archivo original.")
+        st.link_button("Abrir documento original", source, use_container_width=True)
+        return
+
+    upload_root = (Path.cwd() / "uploaded_files").resolve()
+    local_path = (upload_root / source.lstrip("/\\")).resolve()
+    if not local_path.is_relative_to(upload_root) or not local_path.is_file():
+        st.warning("El archivo asociado no se encontró en el almacenamiento local.")
+        return
+    content = local_path.read_bytes()
+    if is_image:
+        st.image(content, caption=document.nombre_archivo, use_container_width=True)
+    elif is_pdf:
+        encoded_pdf = base64.b64encode(content).decode("ascii")
+        st.components.v1.html(
+            f'<iframe src="data:application/pdf;base64,{encoded_pdf}" '
+            'style="width:100%;height:640px;border:0"></iframe>',
+            height=650,
+        )
+    st.download_button(
+        "Descargar documento",
+        data=content,
+        file_name=document.nombre_archivo,
+        mime=document.tipo_contenido,
+        key=f"expense_document_download_{document.id}",
+        use_container_width=True,
+    )
 
 
 def _transition_order(order_id: int, next_state: EstadoPedido) -> None:
