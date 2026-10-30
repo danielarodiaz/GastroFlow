@@ -17,6 +17,7 @@ from gastroflow.internal_app.streamlit_app import (
     _filter_expense_items,
     _expense_date_from_filename,
     _expense_details_from_editor,
+    _filter_expense_tickets,
     _is_pizza_item,
     _normalize_date_range,
     _prioritize_pending_special_orders,
@@ -79,6 +80,34 @@ def test_expense_capture_helpers_complete_manual_fallback() -> None:
     assert details[0].motivo_nombre == "Queso cremoso"
     assert details[0].marca_nombre == "D-70"
     assert details[0].precio_unitario == Decimal("8390.18")
+
+
+def test_expense_ticket_search_uses_one_result_source_for_table_and_selector() -> None:
+    rows = [
+        {
+            "id": 1,
+            "codigo": "GAS-0001",
+            "fecha": date(2026, 10, 21),
+            "lugar": "Distribuidora VIDT",
+            "medio_pago": "TRANSFERENCIA",
+            "destinatario_pago": "Augusto",
+            "identificador_pago": "OP-123",
+            "monto_total": Decimal("49064.40"),
+        },
+        {
+            "id": 2,
+            "codigo": "GAS-0002",
+            "fecha": date(2026, 10, 22),
+            "lugar": "Verdulería Sofía",
+            "medio_pago": "EFECTIVO",
+            "destinatario_pago": None,
+            "identificador_pago": None,
+            "monto_total": Decimal("8000.00"),
+        },
+    ]
+
+    assert [row["id"] for row in _filter_expense_tickets(rows, "vidt")] == [1]
+    assert [row["id"] for row in _filter_expense_tickets(rows, "op-123")] == [1]
 
 
 def test_production_summary_groups_products_and_excludes_finished_orders() -> None:

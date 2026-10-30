@@ -118,7 +118,6 @@ def _init_session_state() -> None:
         "expense_capture_draft": None,
         "expense_capture_file": None,
         "expense_capture_items": [],
-        "expense_edit_id": None,
         "expense_delete_id": None,
         "expense_action_message": "",
     }
@@ -601,15 +600,52 @@ def _render_expense_item_browser(items: list[dict[str, Any]]) -> None:
         hide_index=True,
         use_container_width=True,
     )
-    ticket_options = {f"{row['codigo']} · {row['fecha']} · {row['lugar']}": row["gasto_id"] for row in filtered}
-    selected = st.selectbox("Abrir comprobante", [""] + list(ticket_options), key="expense_item_ticket")
-    if selected and st.button("Ver detalle", key="expense_item_open"):
-        _show_expense_detail(ticket_options[selected])
+    st.caption(
+        "Esta vista analiza productos individuales. Para ver o administrar el ticket completo, "
+        "usá la pestaña Comprobantes."
+    )
+
+
+def _filter_expense_tickets(
+    rows: list[dict[str, Any]], query: str = ""
+) -> list[dict[str, Any]]:
+    search = " ".join(query.casefold().split())
+    return [
+        row
+        for row in rows
+        if not search
+        or search in " ".join(str(value) for value in row.values()).casefold()
+    ]
 
 
 def _render_expense_ticket_browser(expenses: list[dict[str, Any]]) -> None:
-    search = st.text_input("Buscar comprobante", key="expense_ticket_search").casefold().strip()
-    visible = [row for row in expenses if not search or search in " ".join(str(value) for value in row.values()).casefold()]
+    filter_container = st.container(border=True)
+    filter_cols = filter_container.columns([2, 3])
+    search = filter_cols[0].text_input(
+        "Buscar comprobante",
+        placeholder="Código, fecha, comercio, pago u operación",
+        key="expense_ticket_search",
+    )
+    visible = _filter_expense_tickets(expenses, search)
+    options = {f"{row['codigo']} · {row['fecha']} · {row['lugar']}": row["id"] for row in visible}
+    selected = filter_cols[1].selectbox(
+        "Comprobante",
+        [""] + list(options),
+        key="expense_ticket_open",
+        placeholder="Seleccioná un comprobante de los resultados",
+    )
+    selected_id = options.get(selected) if selected else None
+    action_cols = filter_container.columns([1, 1, 1, 3])
+    if action_cols[0].button("Ver", disabled=selected_id is None, key="expense_ticket_open_button"):
+        _show_expense_detail(int(selected_id))
+    if action_cols[1].button("Modificar", disabled=selected_id is None, key="expense_ticket_edit_button"):
+        st.session_state.expense_delete_id = None
+        _show_expense_edit_dialog(int(selected_id))
+    if action_cols[2].button("Eliminar", disabled=selected_id is None, key="expense_ticket_delete_button"):
+        st.session_state.expense_delete_id = int(selected_id)
+        st.rerun()
+
+    st.caption(f"{len(visible)} de {len(expenses)} comprobantes")
     st.dataframe(
         [{
             "Código": row["codigo"], "Fecha": row["fecha"], "Lugar": row["lugar"],
@@ -620,23 +656,6 @@ def _render_expense_ticket_browser(expenses: list[dict[str, Any]]) -> None:
         hide_index=True,
         use_container_width=True,
     )
-    options = {f"{row['codigo']} · {row['fecha']} · {row['lugar']}": row["id"] for row in visible}
-    selected = st.selectbox("Seleccionar comprobante", [""] + list(options), key="expense_ticket_open")
-    selected_id = options.get(selected) if selected else None
-    action_cols = st.columns([1, 1, 1, 3])
-    if action_cols[0].button("Ver", disabled=selected_id is None, key="expense_ticket_open_button"):
-        _show_expense_detail(int(selected_id))
-    if action_cols[1].button("Modificar", disabled=selected_id is None, key="expense_ticket_edit_button"):
-        st.session_state.expense_edit_id = int(selected_id)
-        st.session_state.expense_delete_id = None
-        st.rerun()
-    if action_cols[2].button("Eliminar", disabled=selected_id is None, key="expense_ticket_delete_button"):
-        st.session_state.expense_delete_id = int(selected_id)
-        st.session_state.expense_edit_id = None
-        st.rerun()
-
-    if st.session_state.expense_edit_id:
-        _render_expense_editor(int(st.session_state.expense_edit_id))
     if st.session_state.expense_delete_id:
         _render_expense_delete_confirmation(int(st.session_state.expense_delete_id))
 
@@ -665,75 +684,94 @@ def _load_expense_for_edit(expense_id: int) -> tuple[Gasto, list[dict[str, Any]]
     ]
 
 
+def _show_expense_edit_dialog(expense_id: int) -> None:
+    if hasattr(st, "dialog"):
+        try:
+            dialog_decorator = st.dialog("Modificar gasto", width="large")
+        except TypeError:  # Compatibilidad con versiones anteriores de Streamlit.
+            dialog_decorator = st.dialog("Modificar gasto")
+
+        @dialog_decorator
+        def dialog() -> None:
+            _render_expense_editor(expense_id)
+
+        dialog()
+    else:
+        with st.expander("Modificar gasto", expanded=True):
+            _render_expense_editor(expense_id)
+
+
 def _render_expense_editor(expense_id: int) -> None:
     loaded = _load_expense_for_edit(expense_id)
     if loaded is None:
         st.error("El gasto seleccionado ya no existe.")
-        st.session_state.expense_edit_id = None
         return
     gasto, item_rows = loaded
-    with st.expander(f"Modificar {gasto.codigo}", expanded=True):
-        with st.form(f"expense_edit_form_{expense_id}"):
-            header_cols = st.columns([1, 2])
-            expense_date = header_cols[0].date_input("Fecha", value=gasto.fecha, format="DD-MM-YYYY")
-            place = header_cols[1].text_input("Lugar", value=gasto.lugar_texto)
-            payment_options = ["", "EFECTIVO", "TRANSFERENCIA", "TARJETA", "OTRO"]
-            current_payment = gasto.medio_pago or ""
-            if current_payment and current_payment not in payment_options:
-                payment_options.append(current_payment)
-            payment_cols = st.columns(3)
-            payment_method = payment_cols[0].selectbox(
-                "Medio de pago",
-                payment_options,
-                index=payment_options.index(current_payment) if current_payment in payment_options else 0,
-            )
-            payment_recipient = payment_cols[1].text_input(
-                "Destinatario", value=gasto.destinatario_pago or ""
-            )
-            payment_id = payment_cols[2].text_input(
-                "ID de operación", value=gasto.identificador_pago or ""
-            )
-            observations = st.text_input("Observaciones", value=gasto.observaciones or "")
-            edited_items = st.data_editor(
-                item_rows,
-                num_rows="dynamic",
-                hide_index=True,
-                use_container_width=True,
-                key=f"expense_edit_items_{expense_id}",
-                column_config={
-                    "Cantidad": st.column_config.NumberColumn(min_value=0.001, step=0.001),
-                    "Subtotal": st.column_config.NumberColumn(min_value=0.0, step=100.0, format="$ %.2f"),
-                },
-            )
-            save = st.form_submit_button("Guardar cambios", type="primary")
-            cancel = st.form_submit_button("Cancelar")
-        if cancel:
-            st.session_state.expense_edit_id = None
+    st.caption(f"{gasto.codigo} · Editá el encabezado y los ítems del comprobante.")
+    with st.form(f"expense_edit_form_{expense_id}"):
+        header_cols = st.columns([1, 2])
+        expense_date = header_cols[0].date_input("Fecha", value=gasto.fecha, format="DD-MM-YYYY")
+        place = header_cols[1].text_input("Lugar", value=gasto.lugar_texto)
+        payment_options = ["", "EFECTIVO", "TRANSFERENCIA", "TARJETA", "OTRO"]
+        current_payment = gasto.medio_pago or ""
+        if current_payment and current_payment not in payment_options:
+            payment_options.append(current_payment)
+        payment_cols = st.columns(3)
+        payment_method = payment_cols[0].selectbox(
+            "Medio de pago",
+            payment_options,
+            index=payment_options.index(current_payment) if current_payment in payment_options else 0,
+        )
+        payment_recipient = payment_cols[1].text_input(
+            "Destinatario", value=gasto.destinatario_pago or ""
+        )
+        payment_id = payment_cols[2].text_input(
+            "ID de operación", value=gasto.identificador_pago or ""
+        )
+        observations = st.text_input("Observaciones", value=gasto.observaciones or "")
+        edited_items = st.data_editor(
+            item_rows,
+            num_rows="dynamic",
+            hide_index=True,
+            use_container_width=True,
+            key=f"expense_edit_items_{expense_id}",
+            column_config={
+                "Cantidad": st.column_config.NumberColumn(min_value=0.001, step=0.001),
+                "Subtotal": st.column_config.NumberColumn(
+                    min_value=0.0, step=100.0, format="$ %.2f"
+                ),
+            },
+        )
+        submit_cols = st.columns(2)
+        save = submit_cols[0].form_submit_button(
+            "Guardar cambios", type="primary", use_container_width=True
+        )
+        cancel = submit_cols[1].form_submit_button("Cancelar", use_container_width=True)
+    if cancel:
+        st.rerun()
+    if save:
+        try:
+            details = _expense_details_from_editor(edited_items)
+            with Session(engine) as session:
+                updated = ExpenseService(session).update_expense_ticket(
+                    expense_id,
+                    ExpenseTicketInput(
+                        fecha=expense_date,
+                        lugar_texto=place,
+                        items=details,
+                        observaciones=observations or None,
+                        medio_pago=payment_method or None,
+                        destinatario_pago=payment_recipient or None,
+                        identificador_pago=payment_id or None,
+                    ),
+                    _current_user(),
+                )
+            _load_expense_rows.clear()
+            _load_expense_item_rows.clear()
+            st.session_state.expense_action_message = f"Gasto {updated.codigo} modificado."
             st.rerun()
-        if save:
-            try:
-                details = _expense_details_from_editor(edited_items)
-                with Session(engine) as session:
-                    updated = ExpenseService(session).update_expense_ticket(
-                        expense_id,
-                        ExpenseTicketInput(
-                            fecha=expense_date,
-                            lugar_texto=place,
-                            items=details,
-                            observaciones=observations or None,
-                            medio_pago=payment_method or None,
-                            destinatario_pago=payment_recipient or None,
-                            identificador_pago=payment_id or None,
-                        ),
-                        _current_user(),
-                    )
-                st.session_state.expense_edit_id = None
-                _load_expense_rows.clear()
-                _load_expense_item_rows.clear()
-                st.session_state.expense_action_message = f"Gasto {updated.codigo} modificado."
-                st.rerun()
-            except Exception as exc:
-                _render_action_error("No se pudo modificar el gasto.", exc)
+        except Exception as exc:
+            _render_action_error("No se pudo modificar el gasto.", exc)
 
 
 def _render_expense_delete_confirmation(expense_id: int) -> None:
