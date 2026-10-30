@@ -215,7 +215,7 @@ def hero() -> rx.Component:
             spacing="2",
             align="start",
         ),
-        padding="2rem 0 0.5rem",
+        padding="0.5rem 0 0.5rem",
     )
 
 
@@ -229,7 +229,6 @@ def category_card(category: rx.Var[dict]) -> rx.Component:
             ),
             rx.text(category["nombre"], font_family=FONT_STACK, font_size="1.4rem", color=GREEN, font_weight="900"),
             rx.cond(category["descripcion"] != "", rx.text(category["descripcion"], color="#725f45", font_size="0.92rem"), rx.fragment()),
-            rx.text(category["total"], " productos", color="#725f45", font_weight="700"),
             pill_button("Ver catalogo", on_click=PublicOrderState.show_category(category["id"]), navigation=True, width="100%"),
             spacing="4",
             align="stretch",
