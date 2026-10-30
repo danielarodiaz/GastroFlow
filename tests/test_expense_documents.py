@@ -61,3 +61,48 @@ def test_local_ocr_text_uses_same_transfer_parser_without_azure() -> None:
     assert draft.destinatario_pago == "Franco Ezequiel Suarez"
     assert len(draft.items) == 2
     assert draft.monto_total == Decimal("8000.00")
+
+
+def test_thermal_ticket_ocr_extracts_header_items_brands_and_total() -> None:
+    text = """
+    DISTRIBUIDORA VID! S.R.L.
+    CUIT: 30673770483
+    Inicio Act.: 03/05/1990
+    FECHA 21/10/2026 12:49:32
+    Cantidad x Precio unit.
+    1x5 7561,40
+    ACEITUNA BLATI VERDE NO1 X 1 KG $ 7561,40 |
+    4,900 x $ 8470,00
+    MUZARELLA CILINDRO LAS MAJADAS. $ 41503,00 |
+    1 HORMA
+    TOTAL $ 40004,40
+    Mercado Pago QR $ 49064,40
+    """
+
+    draft = draft_from_ocr_text(text)
+
+    assert draft.fecha == date(2026, 10, 21)
+    assert draft.lugar == "Distribuidora VIDT"
+    assert draft.monto_total == Decimal("49064.40")
+    assert [(item.motivo, item.marca, item.cantidad, item.unidad, item.subtotal) for item in draft.items] == [
+        ("Aceituna Verde No1", "Blati", Decimal("1"), "KG", Decimal("7561.40")),
+        ("Muzarella Cilindro", "Las Majadas", Decimal("4.900"), "KG", Decimal("41503.00")),
+    ]
+
+
+def test_faint_ticket_keeps_partial_header_and_requests_manual_items() -> None:
+    text = """
+    CUIT: 30673770483
+    PLOCHA 15/10/2026 12:36
+    Cantidad x Precio unit.
+    Jeseripcion Importe
+    Mercado Pago UR y 41950,91
+    """
+
+    draft = draft_from_ocr_text(text)
+
+    assert draft.fecha == date(2026, 10, 15)
+    assert draft.lugar == "Distribuidora VIDT"
+    assert draft.monto_total == Decimal("41950.91")
+    assert draft.items == []
+    assert draft.advertencias

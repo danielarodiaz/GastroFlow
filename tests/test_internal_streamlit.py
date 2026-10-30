@@ -15,6 +15,8 @@ from gastroflow.internal_app.streamlit_app import (
     _decode_auth_token,
     _filter_delivered_orders,
     _filter_expense_items,
+    _expense_date_from_filename,
+    _expense_details_from_editor,
     _is_pizza_item,
     _normalize_date_range,
     _prioritize_pending_special_orders,
@@ -61,6 +63,22 @@ def test_expense_item_search_includes_payment_recipient_and_filters() -> None:
 
     assert [row["codigo"] for row in _filter_expense_items(rows, query="Franco")] == ["GAS-0110"]
     assert [row["codigo"] for row in _filter_expense_items(rows, motives=["Nafta"])] == ["GAS-0111"]
+
+
+def test_expense_capture_helpers_complete_manual_fallback() -> None:
+    assert _expense_date_from_filename("15-10-26 - GASTO.jpeg") == date(2026, 10, 15)
+    details = _expense_details_from_editor([{
+        "Motivo": "Queso cremoso",
+        "Marca": "D-70",
+        "Descripción": "Dato corregido manualmente",
+        "Cantidad": 5,
+        "Unidad": "KG",
+        "Subtotal": 41950.91,
+    }])
+
+    assert details[0].motivo_nombre == "Queso cremoso"
+    assert details[0].marca_nombre == "D-70"
+    assert details[0].precio_unitario == Decimal("8390.18")
 
 
 def test_production_summary_groups_products_and_excludes_finished_orders() -> None:

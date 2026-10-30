@@ -2,10 +2,18 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
+from sqlmodel import Session, create_engine, select
 
 from gastroflow.domain.enums import RolUsuario
 from gastroflow.domain.errors import ValidationError
-from gastroflow.models import UsuarioRead
+from gastroflow.models import (
+    Gasto,
+    GastoDetalle,
+    GastoDocumento,
+    Marca,
+    MotivoGasto,
+    UsuarioRead,
+)
 from gastroflow.services import ExpenseDetailInput, ExpenseService, ExpenseTicketInput
 from gastroflow.services.expenses import normalize_catalog_name
 
@@ -92,3 +100,79 @@ def test_expense_line_preserves_entered_total() -> None:
     )
 
     assert service._line_subtotal(item) == Decimal("10.00")
+
+
+def test_expense_ticket_can_be_updated_and_deleted() -> None:
+    engine = create_engine("sqlite://")
+    for table in (
+        MotivoGasto.__table__, Marca.__table__, Gasto.__table__,
+        GastoDetalle.__table__, GastoDocumento.__table__,
+    ):
+        table.create(engine)
+    user = UsuarioRead(
+        id=1,
+        username="ADMIN",
+        rol=RolUsuario.ADMIN,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    with Session(engine) as session:
+        motive = MotivoGasto(nombre="Harina")
+        session.add(motive)
+        session.flush()
+        expense = Gasto(
+            codigo="GAS-0001",
+            fecha=date(2026, 10, 15),
+            lugar_texto="Proveedor anterior",
+            monto_total=Decimal("100.00"),
+        )
+        session.add(expense)
+        session.flush()
+        session.add(GastoDetalle(
+            gasto_id=expense.id or 0,
+            motivo_gasto_id=motive.id or 0,
+            marca_id=None,
+            cantidad=Decimal("1"),
+            unidad_medida="UNIDAD",
+            precio_unitario=Decimal("100"),
+            subtotal=Decimal("100"),
+        ))
+        session.commit()
+        expense_id = expense.id or 0
+
+        updated = ExpenseService(session).update_expense_ticket(
+            expense_id,
+            ExpenseTicketInput(
+                fecha=date(2026, 10, 16),
+                lugar_texto="Proveedor nuevo",
+                medio_pago="TRANSFERENCIA",
+                destinatario_pago="Titular",
+                items=[ExpenseDetailInput(
+                    motivo_nombre="Muzarella",
+                    marca_nombre="Las Majadas",
+                    descripcion="Corregido",
+                    cantidad=Decimal("2"),
+                    unidad_medida="KG",
+                    precio_unitario=Decimal("250"),
+                    subtotal=Decimal("500"),
+                )],
+            ),
+            user,
+        )
+        assert updated.lugar_texto == "Proveedor nuevo"
+        assert updated.monto_total == Decimal("500.00")
+        details = session.exec(select(GastoDetalle).where(GastoDetalle.gasto_id == expense_id)).all()
+        assert len(details) == 1 and details[0].subtotal == Decimal("500.00")
+
+        session.add(GastoDocumento(
+            gasto_id=expense_id,
+            nombre_archivo="ticket.jpg",
+            archivo_url="gastos/ticket.jpg",
+            contenido_sha256="a" * 64,
+            tipo_contenido="image/jpeg",
+        ))
+        session.commit()
+        assert ExpenseService(session).delete_expense_ticket(expense_id, user) == "GAS-0001"
+        assert session.get(Gasto, expense_id) is None
+        assert session.exec(select(GastoDetalle)).all() == []
+        assert session.exec(select(GastoDocumento)).all() == []

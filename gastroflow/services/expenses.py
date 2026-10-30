@@ -8,7 +8,15 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from gastroflow.domain.errors import ValidationError
-from gastroflow.models import Gasto, GastoDetalle, GastoRead, Marca, MotivoGasto, UsuarioRead
+from gastroflow.models import (
+    Gasto,
+    GastoDetalle,
+    GastoDocumento,
+    GastoRead,
+    Marca,
+    MotivoGasto,
+    UsuarioRead,
+)
 from gastroflow.services.auth import AuthService
 from gastroflow.services.codes import next_business_code
 
@@ -135,6 +143,79 @@ class ExpenseService:
             self.session.flush()
         self.session.refresh(gasto)
         return self._to_read(gasto)
+
+    def update_expense_ticket(
+        self,
+        expense_id: int,
+        data: ExpenseTicketInput,
+        current_user: UsuarioRead,
+    ) -> GastoRead:
+        AuthService(self.session).require_owner_or_admin(current_user)
+        self._validate(data)
+        gasto = self.session.get(Gasto, expense_id)
+        if gasto is None:
+            raise ValidationError("El gasto no existe.")
+
+        detail_rows: list[tuple[ExpenseDetailInput, MotivoGasto, Marca | None, Decimal]] = []
+        total = Decimal("0.00")
+        for item in data.items:
+            motivo = self._get_or_create_motivo(item.motivo_nombre)
+            marca = self._get_or_create_marca(item.marca_nombre)
+            subtotal = self._line_subtotal(item)
+            total += subtotal
+            detail_rows.append((item, motivo, marca, subtotal))
+
+        for detail in self.session.exec(
+            select(GastoDetalle).where(GastoDetalle.gasto_id == expense_id)
+        ).all():
+            self.session.delete(detail)
+
+        gasto.fecha = data.fecha
+        gasto.lugar_texto = normalize_display_text(data.lugar_texto)
+        gasto.lugar_lat = data.lugar_lat
+        gasto.lugar_lng = data.lugar_lng
+        gasto.observaciones = normalize_optional_text(data.observaciones)
+        gasto.medio_pago = normalize_optional_text(data.medio_pago)
+        gasto.destinatario_pago = normalize_optional_text(data.destinatario_pago)
+        gasto.identificador_pago = normalize_optional_text(data.identificador_pago)
+        gasto.monto_total = self._money(total)
+        self.session.add(gasto)
+        self.session.flush()
+
+        for item, motivo, marca, subtotal in detail_rows:
+            self.session.add(
+                GastoDetalle(
+                    gasto_id=expense_id,
+                    motivo_gasto_id=motivo.id or 0,
+                    marca_id=marca.id if marca else None,
+                    descripcion=normalize_optional_text(item.descripcion),
+                    cantidad=self._quantity(item.cantidad),
+                    unidad_medida=normalize_display_text(item.unidad_medida),
+                    precio_unitario=self._money(item.precio_unitario),
+                    subtotal=subtotal,
+                )
+            )
+        self.session.commit()
+        self.session.refresh(gasto)
+        return self._to_read(gasto)
+
+    def delete_expense_ticket(self, expense_id: int, current_user: UsuarioRead) -> str:
+        AuthService(self.session).require_owner_or_admin(current_user)
+        gasto = self.session.get(Gasto, expense_id)
+        if gasto is None:
+            raise ValidationError("El gasto no existe.")
+        code = gasto.codigo
+        for detail in self.session.exec(
+            select(GastoDetalle).where(GastoDetalle.gasto_id == expense_id)
+        ).all():
+            self.session.delete(detail)
+        for document in self.session.exec(
+            select(GastoDocumento).where(GastoDocumento.gasto_id == expense_id)
+        ).all():
+            self.session.delete(document)
+        self.session.delete(gasto)
+        self.session.commit()
+        return code
 
     def _get_or_create_motivo(self, nombre: str) -> MotivoGasto:
         normalized = normalize_display_text(nombre)

@@ -7,6 +7,7 @@ import hmac
 import json
 import math
 import mimetypes
+import re
 import time as time_module
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
@@ -117,6 +118,9 @@ def _init_session_state() -> None:
         "expense_capture_draft": None,
         "expense_capture_file": None,
         "expense_capture_items": [],
+        "expense_edit_id": None,
+        "expense_delete_id": None,
+        "expense_action_message": "",
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -517,6 +521,9 @@ def _render_production_summary(orders: list[dict[str, Any]]) -> None:
 
 def _render_expenses() -> None:
     st.title("Gastos")
+    action_message = st.session_state.pop("expense_action_message", "")
+    if action_message:
+        st.success(action_message)
     expenses = _load_expense_rows()
     items = _load_expense_item_rows()
     total_amount = sum((row["subtotal"] for row in items), Decimal("0.00"))
@@ -615,8 +622,145 @@ def _render_expense_ticket_browser(expenses: list[dict[str, Any]]) -> None:
     )
     options = {f"{row['codigo']} · {row['fecha']} · {row['lugar']}": row["id"] for row in visible}
     selected = st.selectbox("Seleccionar comprobante", [""] + list(options), key="expense_ticket_open")
-    if selected and st.button("Ver comprobante", key="expense_ticket_open_button"):
-        _show_expense_detail(options[selected])
+    selected_id = options.get(selected) if selected else None
+    action_cols = st.columns([1, 1, 1, 3])
+    if action_cols[0].button("Ver", disabled=selected_id is None, key="expense_ticket_open_button"):
+        _show_expense_detail(int(selected_id))
+    if action_cols[1].button("Modificar", disabled=selected_id is None, key="expense_ticket_edit_button"):
+        st.session_state.expense_edit_id = int(selected_id)
+        st.session_state.expense_delete_id = None
+        st.rerun()
+    if action_cols[2].button("Eliminar", disabled=selected_id is None, key="expense_ticket_delete_button"):
+        st.session_state.expense_delete_id = int(selected_id)
+        st.session_state.expense_edit_id = None
+        st.rerun()
+
+    if st.session_state.expense_edit_id:
+        _render_expense_editor(int(st.session_state.expense_edit_id))
+    if st.session_state.expense_delete_id:
+        _render_expense_delete_confirmation(int(st.session_state.expense_delete_id))
+
+
+def _load_expense_for_edit(expense_id: int) -> tuple[Gasto, list[dict[str, Any]]] | None:
+    with Session(engine) as session:
+        gasto = session.get(Gasto, expense_id)
+        if gasto is None:
+            return None
+        details = session.exec(
+            select(GastoDetalle).where(GastoDetalle.gasto_id == expense_id).order_by(GastoDetalle.id)
+        ).all()
+        motives = {item.id: item.nombre for item in session.exec(select(MotivoGasto)).all()}
+        brands = {item.id: item.nombre for item in session.exec(select(Marca)).all()}
+        session.expunge(gasto)
+    return gasto, [
+        {
+            "Motivo": motives.get(detail.motivo_gasto_id, ""),
+            "Marca": brands.get(detail.marca_id, "") if detail.marca_id else "",
+            "Descripción": detail.descripcion or "",
+            "Cantidad": float(detail.cantidad),
+            "Unidad": detail.unidad_medida,
+            "Subtotal": float(detail.subtotal),
+        }
+        for detail in details
+    ]
+
+
+def _render_expense_editor(expense_id: int) -> None:
+    loaded = _load_expense_for_edit(expense_id)
+    if loaded is None:
+        st.error("El gasto seleccionado ya no existe.")
+        st.session_state.expense_edit_id = None
+        return
+    gasto, item_rows = loaded
+    with st.expander(f"Modificar {gasto.codigo}", expanded=True):
+        with st.form(f"expense_edit_form_{expense_id}"):
+            header_cols = st.columns([1, 2])
+            expense_date = header_cols[0].date_input("Fecha", value=gasto.fecha, format="DD-MM-YYYY")
+            place = header_cols[1].text_input("Lugar", value=gasto.lugar_texto)
+            payment_options = ["", "EFECTIVO", "TRANSFERENCIA", "TARJETA", "OTRO"]
+            current_payment = gasto.medio_pago or ""
+            if current_payment and current_payment not in payment_options:
+                payment_options.append(current_payment)
+            payment_cols = st.columns(3)
+            payment_method = payment_cols[0].selectbox(
+                "Medio de pago",
+                payment_options,
+                index=payment_options.index(current_payment) if current_payment in payment_options else 0,
+            )
+            payment_recipient = payment_cols[1].text_input(
+                "Destinatario", value=gasto.destinatario_pago or ""
+            )
+            payment_id = payment_cols[2].text_input(
+                "ID de operación", value=gasto.identificador_pago or ""
+            )
+            observations = st.text_input("Observaciones", value=gasto.observaciones or "")
+            edited_items = st.data_editor(
+                item_rows,
+                num_rows="dynamic",
+                hide_index=True,
+                use_container_width=True,
+                key=f"expense_edit_items_{expense_id}",
+                column_config={
+                    "Cantidad": st.column_config.NumberColumn(min_value=0.001, step=0.001),
+                    "Subtotal": st.column_config.NumberColumn(min_value=0.0, step=100.0, format="$ %.2f"),
+                },
+            )
+            save = st.form_submit_button("Guardar cambios", type="primary")
+            cancel = st.form_submit_button("Cancelar")
+        if cancel:
+            st.session_state.expense_edit_id = None
+            st.rerun()
+        if save:
+            try:
+                details = _expense_details_from_editor(edited_items)
+                with Session(engine) as session:
+                    updated = ExpenseService(session).update_expense_ticket(
+                        expense_id,
+                        ExpenseTicketInput(
+                            fecha=expense_date,
+                            lugar_texto=place,
+                            items=details,
+                            observaciones=observations or None,
+                            medio_pago=payment_method or None,
+                            destinatario_pago=payment_recipient or None,
+                            identificador_pago=payment_id or None,
+                        ),
+                        _current_user(),
+                    )
+                st.session_state.expense_edit_id = None
+                _load_expense_rows.clear()
+                _load_expense_item_rows.clear()
+                st.session_state.expense_action_message = f"Gasto {updated.codigo} modificado."
+                st.rerun()
+            except Exception as exc:
+                _render_action_error("No se pudo modificar el gasto.", exc)
+
+
+def _render_expense_delete_confirmation(expense_id: int) -> None:
+    expense = next((row for row in _load_expense_rows() if row["id"] == expense_id), None)
+    if expense is None:
+        st.session_state.expense_delete_id = None
+        return
+    with st.container(border=True):
+        st.warning(
+            f"Vas a eliminar {expense['codigo']} de {expense['lugar']} por "
+            f"{_money_text(expense['monto_total'])}. Esta acción no se puede deshacer."
+        )
+        cols = st.columns([1, 1, 3])
+        if cols[0].button("Confirmar eliminación", type="primary", key=f"confirm_delete_{expense_id}"):
+            try:
+                with Session(engine) as session:
+                    code = ExpenseService(session).delete_expense_ticket(expense_id, _current_user())
+                st.session_state.expense_delete_id = None
+                _load_expense_rows.clear()
+                _load_expense_item_rows.clear()
+                st.session_state.expense_action_message = f"Gasto {code} eliminado."
+                st.rerun()
+            except Exception as exc:
+                _render_action_error("No se pudo eliminar el gasto.", exc)
+        if cols[1].button("Cancelar", key=f"cancel_delete_{expense_id}"):
+            st.session_state.expense_delete_id = None
+            st.rerun()
 
 
 def _render_catalog() -> None:
@@ -1158,8 +1302,19 @@ def _render_expense_capture() -> None:
                 if duplicate is not None:
                     st.error("Este documento ya está asociado a un gasto.")
                 else:
-                    with st.spinner("Leyendo QR y texto localmente con Tesseract..."):
-                        draft = HybridExpenseDocumentReader().analyze(content, content_type)
+                    try:
+                        with st.spinner("Leyendo QR y texto localmente con Tesseract..."):
+                            draft = HybridExpenseDocumentReader().analyze(content, content_type)
+                    except Exception as exc:
+                        draft = ExpenseDocumentDraft(
+                            motor_lectura="manual-fallback",
+                            advertencias=[
+                                "Tesseract no pudo completar la lectura. Cargá o corregí los datos "
+                                f"en el formulario: {exc}"
+                            ],
+                        )
+                    if draft.fecha is None:
+                        draft.fecha = _expense_date_from_filename(uploaded.name)
                     st.session_state.expense_capture_draft = draft
                     st.session_state.expense_capture_file = {
                         "name": uploaded.name,
@@ -1171,15 +1326,19 @@ def _render_expense_capture() -> None:
                         {
                             "Motivo": item.motivo,
                             "Marca": item.marca or "",
+                            "Descripción": item.descripcion or "",
                             "Cantidad": float(item.cantidad),
                             "Unidad": item.unidad,
                             "Subtotal": float(item.subtotal),
                         }
                         for item in draft.items
-                    ]
+                    ] or [{
+                        "Motivo": "", "Marca": "", "Descripción": "",
+                        "Cantidad": 1.0, "Unidad": "UNIDAD", "Subtotal": 0.0,
+                    }]
                     st.rerun()
             except Exception as exc:
-                _render_action_error("No se pudo analizar el documento.", exc)
+                _render_action_error("No se pudo preparar el documento.", exc)
 
     draft = st.session_state.get("expense_capture_draft")
     file_data = st.session_state.get("expense_capture_file")
@@ -1192,6 +1351,9 @@ def _render_expense_capture() -> None:
         st.success("QR detectado localmente.")
     for warning in draft.advertencias:
         st.warning(warning)
+    if draft.texto_extraido:
+        with st.expander("Texto detectado por Tesseract", expanded=False):
+            st.text(draft.texto_extraido)
     header_cols = st.columns([1, 2, 1])
     expense_date = header_cols[0].date_input(
         "Fecha", value=draft.fecha or date.today(), key="expense_capture_date", format="DD-MM-YYYY"
@@ -1205,9 +1367,11 @@ def _render_expense_capture() -> None:
         key="expense_capture_total",
     )
     payment_cols = st.columns(3)
+    payment_options = ["", "TRANSFERENCIA", "EFECTIVO", "TARJETA", "OTRO"]
+    current_payment = draft.medio_pago or ""
     payment_method = payment_cols[0].selectbox(
-        "Medio de pago", ["TRANSFERENCIA", "EFECTIVO", "TARJETA", "OTRO"],
-        index=0 if draft.medio_pago == "TRANSFERENCIA" else 1,
+        "Medio de pago", payment_options,
+        index=payment_options.index(current_payment) if current_payment in payment_options else 0,
         key="expense_capture_payment_method",
     )
     payment_recipient = payment_cols[1].text_input(
@@ -1224,11 +1388,17 @@ def _render_expense_capture() -> None:
         use_container_width=True,
         key="expense_capture_item_editor",
         column_config={
+            "Motivo": st.column_config.TextColumn(required=True),
+            "Descripción": st.column_config.TextColumn(),
             "Cantidad": st.column_config.NumberColumn(min_value=0.001, step=0.001),
+            "Unidad": st.column_config.TextColumn(required=True),
             "Subtotal": st.column_config.NumberColumn(min_value=0.0, step=100.0, format="$ %.2f"),
         },
     )
-    calculated_total = sum((Decimal(str(row.get("Subtotal") or 0)) for row in edited_items), Decimal("0"))
+    calculated_total = sum(
+        (Decimal(str(row.get("Subtotal") or 0)) for row in _editor_rows(edited_items)),
+        Decimal("0"),
+    )
     st.write(f"Total de ítems: {_money_text(calculated_total)}")
     action_cols = st.columns([1, 1, 3])
     if action_cols[0].button("Confirmar gasto", type="primary", key="expense_capture_confirm"):
@@ -1242,25 +1412,14 @@ def _render_expense_capture() -> None:
             st.error("El total de los ítems debe coincidir con el total del documento.")
             return
         try:
-            details = []
-            for row in edited_items:
-                quantity = Decimal(str(row.get("Cantidad") or 0))
-                subtotal = Decimal(str(row.get("Subtotal") or 0)).quantize(Decimal("0.01"))
-                details.append(ExpenseDetailInput(
-                    motivo_nombre=str(row.get("Motivo") or ""),
-                    marca_nombre=str(row.get("Marca") or "") or None,
-                    cantidad=quantity,
-                    unidad_medida=str(row.get("Unidad") or "UNIDAD"),
-                    precio_unitario=(subtotal / quantity).quantize(Decimal("0.01")),
-                    subtotal=subtotal,
-                ))
+            details = _expense_details_from_editor(edited_items)
             with Session(engine) as session:
                 expense = ExpenseService(session).create_expense_ticket(
                     ExpenseTicketInput(
                         fecha=expense_date,
                         lugar_texto=place,
                         items=details,
-                        medio_pago=payment_method,
+                        medio_pago=payment_method or None,
                         destinatario_pago=payment_recipient or None,
                         identificador_pago=payment_id or None,
                         observaciones="Carga asistida desde documento; datos confirmados por el usuario.",
@@ -1304,6 +1463,55 @@ def _render_expense_capture() -> None:
         st.session_state.expense_capture_file = None
         st.session_state.expense_capture_items = []
         st.rerun()
+
+
+def _expense_details_from_editor(edited_items: Any) -> list[ExpenseDetailInput]:
+    rows = _editor_rows(edited_items)
+    if not rows:
+        raise ValidationError("Agregá al menos un ítem.")
+    details: list[ExpenseDetailInput] = []
+    for row in rows:
+        motive = " ".join(str(row.get("Motivo") or "").split())
+        unit = " ".join(str(row.get("Unidad") or "").split())
+        quantity = Decimal(str(row.get("Cantidad") or 0))
+        subtotal = Decimal(str(row.get("Subtotal") or 0)).quantize(Decimal("0.01"))
+        if not motive:
+            raise ValidationError("Todos los ítems deben tener motivo.")
+        if not unit:
+            raise ValidationError("Todos los ítems deben tener unidad.")
+        if quantity <= 0:
+            raise ValidationError("Todas las cantidades deben ser mayores a cero.")
+        if subtotal < 0:
+            raise ValidationError("Los subtotales no pueden ser negativos.")
+        details.append(ExpenseDetailInput(
+            motivo_nombre=motive,
+            marca_nombre=" ".join(str(row.get("Marca") or "").split()) or None,
+            descripcion=" ".join(str(row.get("Descripción") or "").split()) or None,
+            cantidad=quantity,
+            unidad_medida=unit,
+            precio_unitario=(subtotal / quantity).quantize(Decimal("0.01")),
+            subtotal=subtotal,
+        ))
+    return details
+
+
+def _editor_rows(edited_items: Any) -> list[dict[str, Any]]:
+    if hasattr(edited_items, "to_dict"):
+        return list(edited_items.to_dict("records"))
+    return list(edited_items)
+
+
+def _expense_date_from_filename(filename: str) -> date | None:
+    match = re.search(r"(?:^|\D)(\d{1,2})[-_](\d{1,2})[-_](\d{2,4})(?:\D|$)", filename)
+    if not match:
+        return None
+    day, month, year = (int(part) for part in match.groups())
+    if year < 100:
+        year += 2000
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
 
 
 def _add_expense_ticket_item(
