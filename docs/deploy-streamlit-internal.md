@@ -20,7 +20,8 @@ Usar:
 streamlit_deploy/requirements.txt
 ```
 
-El archivo de dependencias del entrypoint fija la versión de Streamlit. No debe
+El archivo de dependencias del entrypoint fija Streamlit en la versión estable
+probada para Community Cloud. No debe
 reemplazarse por un rango abierto: Community Cloud podría iniciar el servidor con
 un frontend distinto al probado y dejar módulos del navegador incompatibles en caché.
 
