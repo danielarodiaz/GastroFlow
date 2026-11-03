@@ -62,8 +62,20 @@ Incluido:
 - subida/cambio de logo;
 - subida/cambio de fotos de categorias;
 - subida/cambio de fotos de productos por categoria.
-- admin tecnico de tablas con `AdminCrudService`.
+- administración intuitiva de zonas de envío, categorías, agregados y usuarios;
+- permisos por módulo, bajas reversibles y registro de cambios administrativos.
 
 Pendiente para fases siguientes:
 
 - mejoras visuales del editor de catalogo.
+
+## Migración administrativa
+
+Antes de iniciar esta versión, aplicar la migración que incorpora estados activos,
+permisos y auditoría:
+
+```powershell
+python -m alembic upgrade head
+```
+
+La revisión esperada es `0016_admin_management`.

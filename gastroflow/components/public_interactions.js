@@ -76,12 +76,28 @@ function attachPublicInteractions(root) {
     if (state.cart || state.navigation) return block(event);
     begin("cart", event.target.querySelector('button[type="submit"]'));
   };
+  const onShare = (event) => {
+    const link = event.target.closest("a[data-public-share-url]");
+    if (!link || !navigator.share) return;
+    const data = {
+      title: "Carta de Las Pizzas de Alejo",
+      url: new URL(link.dataset.publicShareUrl, document.baseURI).href,
+    };
+    if (navigator.canShare && !navigator.canShare(data)) return;
+    event.preventDefault();
+    navigator.share(data).catch(error => {
+      if (error.name !== "AbortError") window.location.assign(link.href);
+    });
+  };
   root.addEventListener("mousedown", onMouseDown, true);
   root.addEventListener("click", onClick, true);
   root.addEventListener("submit", onSubmit, true);
+  // The dialog is rendered in a portal outside the page root.
+  document.addEventListener("click", onShare);
   return () => {
     root.removeEventListener("mousedown", onMouseDown, true);
     root.removeEventListener("click", onClick, true);
     root.removeEventListener("submit", onSubmit, true);
+    document.removeEventListener("click", onShare);
   };
 }

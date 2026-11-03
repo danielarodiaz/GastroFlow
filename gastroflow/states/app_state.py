@@ -17,7 +17,7 @@ from openpyxl import Workbook
 from sqlmodel import Session, select
 
 from gastroflow.data.database import engine
-from gastroflow.domain.enums import EstadoPedido, FormaPago, RolUsuario
+from gastroflow.domain.enums import EstadoPedido, FormaPago, PermisoUsuario, RolUsuario
 from gastroflow.domain.enums import TipoPromocion
 from gastroflow.domain.errors import DomainError
 from gastroflow.models import (
@@ -285,7 +285,7 @@ def _public_catalog_rows():
             .outerjoin(Producto, (Producto.id == ProductoCategoria.producto_id) & (Producto.activo == True))
             .where(Categoria.visible_cliente == True, Categoria.es_automatica == False, Categoria.activa == True)
         ).all()
-        zones = session.exec(select(ZonaEnvio)).all()
+        zones = session.exec(select(ZonaEnvio).where(ZonaEnvio.activa == True)).all()
     categories = {category.id: category for category, _, _ in rows}
     products = {product.id: product for _, _, product in rows if product is not None}
     relations = [relation for _, relation, product in rows if relation is not None and product is not None]
@@ -298,6 +298,7 @@ class AuthState(rx.State):
     show_password: bool = False
     user_id: int = 0
     role: str = ""
+    permissions: list[str] = []
     message: str = ""
     technical_error: str = ""
     show_technical_error: bool = False
@@ -308,7 +309,7 @@ class AuthState(rx.State):
 
     @rx.var
     def is_admin(self) -> bool:
-        return self.role == RolUsuario.ADMIN.value
+        return PermisoUsuario.CONFIGURACION.value in self.permissions
 
     def current_user(self) -> UsuarioRead:
         role = RolUsuario(self.role or RolUsuario.DUENO.value)
@@ -316,6 +317,8 @@ class AuthState(rx.State):
             id=self.user_id,
             username=self.username,
             rol=role,
+            activo=True,
+            permisos=self.permissions,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
         )
@@ -330,6 +333,7 @@ class AuthState(rx.State):
             self.user_id = user.id
             self.username = user.username
             self.role = user.rol.value
+            self.permissions = list(AuthService.effective_permissions(user))
             self.password = ""
             self.message = "Sesion iniciada."
             return rx.redirect("/pedidos")
@@ -343,6 +347,7 @@ class AuthState(rx.State):
         self.password = ""
         self.user_id = 0
         self.role = ""
+        self.permissions = []
         self.message = ""
         self.technical_error = ""
         self.show_technical_error = False

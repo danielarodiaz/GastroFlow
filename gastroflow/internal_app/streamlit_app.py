@@ -23,10 +23,11 @@ from sqlmodel import Session, select
 
 from gastroflow.data.database import engine
 from gastroflow.config.settings import get_settings
-from gastroflow.domain.enums import EstadoPedido, FormaPago, RolUsuario, TipoPromocion, UnidadVenta
+from gastroflow.domain.enums import EstadoPedido, FormaPago, PermisoUsuario, RolUsuario, TipoPromocion, UnidadVenta
 from gastroflow.domain.errors import DomainError, ValidationError
 from gastroflow.domain.order_state import valid_next_states
 from gastroflow.models import (
+    Agregado,
     AgregadoCategoria,
     AppConfig,
     Categoria,
@@ -52,15 +53,15 @@ from gastroflow.models import (
     ZonaEnvio,
 )
 from gastroflow.services import (
-    AdminCrudService,
+    AdminManagementService,
     AuthService,
-    CRUD_TABLES,
     ExpenseDetailInput,
     ExpenseService,
     ExpenseTicketInput,
     OrderService,
     normalize_phone,
 )
+from gastroflow.services.brand_media import MENU_IMAGE_CONFIG_KEY
 from gastroflow.services.media_storage import save_media_bytes
 from gastroflow.services.expense_documents import ExpenseDocumentDraft, HybridExpenseDocumentReader
 from gastroflow.services.promotions import configure_promotion
@@ -108,6 +109,7 @@ def _init_session_state() -> None:
         "user_id": 0,
         "username": "",
         "role": "",
+        "permissions": [],
         "internal_page": "Pedidos",
         "auth_message": "",
         "selected_order_id": None,
@@ -132,7 +134,23 @@ def _render_sidebar() -> None:
         st.title("GastroFlow")
         if _is_authenticated():
             st.caption(f"{st.session_state.username} | {st.session_state.role}")
-            pages = ["Pedidos", "Gastos", "Catalogo", "Promos", "Admin"]
+            page_permissions = [
+                ("Pedidos", PermisoUsuario.PEDIDOS),
+                ("Gastos", PermisoUsuario.GASTOS),
+                ("Catalogo", PermisoUsuario.CATALOGO),
+                ("Promos", PermisoUsuario.PROMOCIONES),
+            ]
+            pages = [page for page, permission in page_permissions if _has_permission(permission)]
+            if _has_permission(PermisoUsuario.CONFIGURACION) or _has_permission(PermisoUsuario.USUARIOS):
+                pages.append("Admin")
+            if not pages:
+                st.warning("Tu usuario no tiene módulos habilitados.")
+                if st.button("Cerrar sesion", use_container_width=True):
+                    _logout()
+                    st.rerun()
+                return
+            if st.session_state.internal_page not in pages:
+                st.session_state.internal_page = pages[0]
             st.radio(
                 "Seccion",
                 pages,
@@ -160,6 +178,7 @@ def _render_login() -> None:
             st.session_state.user_id = user.id
             st.session_state.username = user.username
             st.session_state.role = user.rol.value
+            st.session_state.permissions = list(AuthService.effective_permissions(user))
             st.session_state.auth_message = ""
             _persist_authentication(user.id)
             st.rerun()
@@ -226,7 +245,7 @@ def _render_live_orders() -> None:
                 st.session_state.selected_order_id = row["id"]
                 _show_order_detail(row)
 
-            if _is_admin() and st.button(
+            if _has_permission(PermisoUsuario.PEDIDOS) and st.button(
                 "Modificar pedido",
                 key=f"edit_active_order_{row['id']}",
                 use_container_width=True,
@@ -806,7 +825,7 @@ def _render_expense_delete_confirmation(expense_id: int) -> None:
 def _render_catalog() -> None:
     st.title("Catalogo")
     categories, product_rows, products = _load_catalog_rows()
-    if _is_admin():
+    if _has_permission(PermisoUsuario.CATALOGO):
         _render_brand_media_editor()
     category_tab, product_tab = st.tabs(["Categorias", "Productos por categoria"])
 
@@ -826,14 +845,14 @@ def _render_catalog() -> None:
             hide_index=True,
             use_container_width=True,
         )
-        if not _is_admin():
+        if not _has_permission(PermisoUsuario.CATALOGO):
             st.info("Solo Admin puede modificar el catalogo.")
         else:
             _render_category_editor(categories)
 
     with product_tab:
         st.dataframe(product_rows, hide_index=True, use_container_width=True)
-        if not _is_admin():
+        if not _has_permission(PermisoUsuario.CATALOGO):
             st.info("Solo Admin puede modificar productos.")
         else:
             _render_add_product_to_category(categories, products)
@@ -846,7 +865,7 @@ def _render_promotions() -> None:
         st.success("Promo guardada.")
     promos, promo_rows, products = _load_promotion_rows()
     st.dataframe(promo_rows, hide_index=True, use_container_width=True)
-    if not _is_admin():
+    if not _has_permission(PermisoUsuario.PROMOCIONES):
         st.info("Solo Admin puede modificar promociones.")
         return
     _render_promotion_editor(promos, products)
@@ -854,47 +873,372 @@ def _render_promotions() -> None:
 
 def _render_admin() -> None:
     st.title("Admin")
-    if not _is_admin():
-        st.info("Solo Admin puede acceder a esta seccion.")
+    sections: list[str] = []
+    if _has_permission(PermisoUsuario.CONFIGURACION):
+        sections.extend(["Zonas de envío", "Categorías", "Agregados"])
+    if _has_permission(PermisoUsuario.USUARIOS):
+        sections.append("Usuarios y permisos")
+    if not sections:
+        st.info("Tu usuario no tiene permisos para administrar configuraciones.")
         return
-
-    table_name = st.selectbox("Tabla", list(CRUD_TABLES.keys()), key="admin_table_name")
-    records = _load_admin_records(table_name)
-    st.caption(f"{len(records)} registros")
-    st.dataframe(records, hide_index=True, use_container_width=True)
-
-    action = st.radio("Accion", ["Crear", "Actualizar", "Borrar"], horizontal=True)
-    if action in {"Actualizar", "Borrar"}:
-        record_id = st.number_input("ID", min_value=1, step=1, key="admin_record_id")
+    if message := st.session_state.pop("admin_action_message", ""):
+        st.success(message)
+    if st.session_state.get("admin_section") not in sections:
+        st.session_state.admin_section = sections[0]
+    section = st.radio(
+        "Configuración",
+        sections,
+        horizontal=True,
+        key="admin_section",
+    )
+    if section == "Zonas de envío":
+        _render_admin_zones()
+    elif section == "Categorías":
+        _render_admin_categories()
+    elif section == "Agregados":
+        _render_admin_addons()
     else:
-        record_id = None
+        _render_admin_users()
 
-    if action in {"Crear", "Actualizar"}:
-        st.caption("Usa JSON con nombres de campos del modelo. Para `usuario`, usa `password` al crear o cambiar clave.")
-        payload_json = st.text_area("Payload JSON", value="{}", height=180, key="admin_payload_json")
-        if st.button(f"{action} registro", use_container_width=True):
+
+def _admin_finish(message: str) -> None:
+    st.session_state.admin_action_message = message
+    st.rerun()
+
+
+def _admin_action() -> str:
+    return st.radio(
+        "Acción",
+        ["Alta", "Modificar", "Baja o reactivación"],
+        horizontal=True,
+        key=f"admin_action_{st.session_state.get('admin_section', '')}",
+    )
+
+
+def _render_admin_zones() -> None:
+    st.subheader("Zonas de envío")
+    st.caption("Las zonas desactivadas dejan de ofrecerse en pedidos nuevos y se conservan en el historial.")
+    try:
+        with Session(engine) as session:
+            zones = AdminManagementService(session).list_zones(_current_user())
+    except Exception as exc:
+        _render_action_error("No se pudieron cargar las zonas.", exc)
+        return
+    st.dataframe(
+        [{"Zona": zone.nombre, "Costo": _money_text(zone.costo), "Estado": "Activa" if zone.activa else "Inactiva"} for zone in zones],
+        hide_index=True,
+        use_container_width=True,
+    )
+    action = _admin_action()
+    if action == "Alta":
+        with st.form("admin_zone_create"):
+            name = st.text_input("Nombre de la zona")
+            cost = st.number_input("Costo de envío", min_value=0.0, step=100.0)
+            submitted = st.form_submit_button("Crear zona", use_container_width=True)
+        if submitted:
             try:
-                payload = json.loads(payload_json)
-                if not isinstance(payload, dict):
-                    raise ValueError("El payload debe ser un objeto JSON.")
                 with Session(engine) as session:
-                    service = AdminCrudService(session)
-                    if action == "Crear":
-                        result = service.create_record(table_name, payload, _current_user())
-                    else:
-                        result = service.update_record(table_name, int(record_id or 0), payload, _current_user())
-                st.success(f"Guardado: {result}")
+                    AdminManagementService(session).create_zone(name, Decimal(str(cost)), _current_user())
+                _admin_finish("Zona creada correctamente.")
             except Exception as exc:
-                _render_action_error("No se pudo guardar el registro.", exc)
+                _render_action_error("No se pudo crear la zona.", exc)
+        return
+    if not zones:
+        st.info("Todavía no hay zonas cargadas.")
+        return
+    options = {f"{zone.nombre} · {'Activa' if zone.activa else 'Inactiva'}": zone for zone in zones}
+    selected = options[st.selectbox("Zona", list(options), key=f"admin_zone_{action}")]
+    if action == "Modificar":
+        with st.form(f"admin_zone_update_{selected.id}"):
+            name = st.text_input("Nombre de la zona", value=selected.nombre)
+            cost = st.number_input("Costo de envío", min_value=0.0, value=float(selected.costo), step=100.0)
+            submitted = st.form_submit_button("Guardar cambios", use_container_width=True)
+        if submitted:
+            try:
+                with Session(engine) as session:
+                    AdminManagementService(session).update_zone(selected.id or 0, name, Decimal(str(cost)), _current_user())
+                _admin_finish("Zona modificada correctamente.")
+            except Exception as exc:
+                _render_action_error("No se pudo modificar la zona.", exc)
     else:
-        st.warning("Borrar registros puede afectar relaciones. Usar solo para correcciones controladas.")
-        if st.button("Borrar registro", use_container_width=True):
+        target_active = not selected.activa
+        verb = "Reactivar" if target_active else "Desactivar"
+        st.warning(f"La zona quedará {'disponible para pedidos nuevos' if target_active else 'oculta para pedidos nuevos'}.")
+        confirmed = st.checkbox(f"Confirmo que quiero {verb.lower()} esta zona.")
+        if st.button(f"{verb} zona", use_container_width=True, type="primary", disabled=not confirmed):
             try:
                 with Session(engine) as session:
-                    AdminCrudService(session).delete_record(table_name, int(record_id or 0), _current_user())
-                st.success("Registro borrado.")
+                    AdminManagementService(session).set_zone_active(selected.id or 0, target_active, _current_user())
+                _admin_finish(f"Zona {'reactivada' if target_active else 'desactivada'} correctamente.")
             except Exception as exc:
-                _render_action_error("No se pudo borrar el registro.", exc)
+                _render_action_error(f"No se pudo {verb.lower()} la zona.", exc)
+
+
+def _render_admin_categories() -> None:
+    st.subheader("Categorías")
+    st.caption("Aquí se administra el alta, nombre, descripción y estado. Imagen, orden, visibilidad y productos se configuran en Catálogo.")
+    try:
+        with Session(engine) as session:
+            categories = AdminManagementService(session).list_categories(_current_user())
+    except Exception as exc:
+        _render_action_error("No se pudieron cargar las categorías.", exc)
+        return
+    st.dataframe(
+        [{"Código": category.codigo, "Categoría": category.nombre, "Estado": "Activa" if category.activa else "Inactiva"} for category in categories],
+        hide_index=True,
+        use_container_width=True,
+    )
+    action = _admin_action()
+    if action == "Alta":
+        with st.form("admin_category_create"):
+            name = st.text_input("Nombre de la categoría")
+            description = st.text_area("Descripción inicial (opcional)")
+            submitted = st.form_submit_button("Crear categoría", use_container_width=True)
+        if submitted:
+            try:
+                with Session(engine) as session:
+                    AdminManagementService(session).create_category(name, description, _current_user())
+                _load_catalog_rows.clear()
+                _admin_finish("Categoría creada. Ya podés completar su configuración desde Catálogo.")
+            except Exception as exc:
+                _render_action_error("No se pudo crear la categoría.", exc)
+        return
+    if not categories:
+        st.info("Todavía no hay categorías cargadas.")
+        return
+    options = {f"{category.nombre} · {'Activa' if category.activa else 'Inactiva'}": category for category in categories}
+    selected = options[st.selectbox("Categoría", list(options), key=f"admin_category_{action}")]
+    if action == "Modificar":
+        with st.form(f"admin_category_update_{selected.id}"):
+            name = st.text_input("Nombre de la categoría", value=selected.nombre)
+            description = st.text_area("Descripción", value=selected.descripcion_publica or "")
+            submitted = st.form_submit_button("Guardar cambios", use_container_width=True)
+        if submitted:
+            try:
+                with Session(engine) as session:
+                    AdminManagementService(session).update_category(selected.id or 0, name, description, _current_user())
+                _load_catalog_rows.clear()
+                _admin_finish("Categoría modificada correctamente.")
+            except Exception as exc:
+                _render_action_error("No se pudo modificar la categoría.", exc)
+    else:
+        target_active = not selected.activa
+        verb = "Reactivar" if target_active else "Desactivar"
+        confirmed = st.checkbox(f"Confirmo que quiero {verb.lower()} esta categoría.")
+        if st.button(f"{verb} categoría", use_container_width=True, type="primary", disabled=not confirmed):
+            try:
+                with Session(engine) as session:
+                    AdminManagementService(session).set_category_active(selected.id or 0, target_active, _current_user())
+                _load_catalog_rows.clear()
+                _admin_finish(f"Categoría {'reactivada' if target_active else 'desactivada'} correctamente.")
+            except Exception as exc:
+                _render_action_error(f"No se pudo {verb.lower()} la categoría.", exc)
+
+
+def _render_admin_addons() -> None:
+    st.subheader("Agregados")
+    st.caption("Cada agregado puede habilitarse en una o más categorías. La baja conserva los agregados de pedidos anteriores.")
+    try:
+        with Session(engine) as session:
+            service = AdminManagementService(session)
+            addon_rows = service.list_addons(_current_user())
+            categories = service.list_categories(_current_user())
+    except Exception as exc:
+        _render_action_error("No se pudieron cargar los agregados.", exc)
+        return
+    st.dataframe(
+        [
+            {
+                "Agregado": addon.nombre,
+                "Precio": _money_text(addon.precio),
+                "Categorías": ", ".join(category.nombre for category in assigned_categories),
+                "Estado": "Activo" if addon.activo else "Inactivo",
+            }
+            for addon, assigned_categories in addon_rows
+        ],
+        hide_index=True,
+        use_container_width=True,
+    )
+    category_options = {
+        f"{category.nombre}{'' if category.activa else ' (inactiva)'}": category.id or 0
+        for category in categories
+    }
+    active_category_options = {
+        label: category_id
+        for label, category_id in category_options.items()
+        if not label.endswith(" (inactiva)")
+    }
+    action = _admin_action()
+    if action == "Alta":
+        with st.form("admin_addon_create"):
+            name = st.text_input("Nombre del agregado")
+            price = st.number_input("Precio", min_value=0.0, step=100.0)
+            selected_categories = st.multiselect("Categorías habilitadas", list(active_category_options))
+            submitted = st.form_submit_button("Crear agregado", use_container_width=True)
+        if submitted:
+            try:
+                with Session(engine) as session:
+                    AdminManagementService(session).create_addon(
+                        name,
+                        Decimal(str(price)),
+                        [active_category_options[label] for label in selected_categories],
+                        _current_user(),
+                    )
+                _admin_finish("Agregado creado correctamente.")
+            except Exception as exc:
+                _render_action_error("No se pudo crear el agregado.", exc)
+        return
+    if not addon_rows:
+        st.info("Todavía no hay agregados cargados.")
+        return
+    options = {f"{addon.nombre} · {'Activo' if addon.activo else 'Inactivo'}": (addon, assigned) for addon, assigned in addon_rows}
+    selected, assigned = options[st.selectbox("Agregado", list(options), key=f"admin_addon_{action}")]
+    if action == "Modificar":
+        assigned_ids = {category.id for category in assigned}
+        assigned_names = [
+            label for label, category_id in category_options.items() if category_id in assigned_ids
+        ]
+        with st.form(f"admin_addon_update_{selected.id}"):
+            name = st.text_input("Nombre del agregado", value=selected.nombre)
+            price = st.number_input("Precio", min_value=0.0, value=float(selected.precio), step=100.0)
+            selected_categories = st.multiselect("Categorías habilitadas", list(category_options), default=assigned_names)
+            submitted = st.form_submit_button("Guardar cambios", use_container_width=True)
+        if submitted:
+            try:
+                with Session(engine) as session:
+                    AdminManagementService(session).update_addon(
+                        selected.id or 0,
+                        name,
+                        Decimal(str(price)),
+                        [category_options[label] for label in selected_categories],
+                        _current_user(),
+                    )
+                _admin_finish("Agregado modificado correctamente.")
+            except Exception as exc:
+                _render_action_error("No se pudo modificar el agregado.", exc)
+    else:
+        target_active = not selected.activo
+        verb = "Reactivar" if target_active else "Desactivar"
+        confirmed = st.checkbox(f"Confirmo que quiero {verb.lower()} este agregado.")
+        if st.button(f"{verb} agregado", use_container_width=True, type="primary", disabled=not confirmed):
+            try:
+                with Session(engine) as session:
+                    AdminManagementService(session).set_addon_active(selected.id or 0, target_active, _current_user())
+                _admin_finish(f"Agregado {'reactivado' if target_active else 'desactivado'} correctamente.")
+            except Exception as exc:
+                _render_action_error(f"No se pudo {verb.lower()} el agregado.", exc)
+
+
+PERMISSION_LABELS = {
+    PermisoUsuario.PEDIDOS.value: "Gestionar pedidos",
+    PermisoUsuario.GASTOS.value: "Gestionar gastos",
+    PermisoUsuario.CATALOGO.value: "Gestionar catálogo",
+    PermisoUsuario.PROMOCIONES.value: "Gestionar promociones",
+    PermisoUsuario.CONFIGURACION.value: "Administrar configuraciones",
+    PermisoUsuario.USUARIOS.value: "Administrar usuarios y permisos",
+}
+PERMISSION_PROFILES = {
+    "Administrador": list(PERMISSION_LABELS),
+    "Gestión": [
+        PermisoUsuario.PEDIDOS.value,
+        PermisoUsuario.GASTOS.value,
+        PermisoUsuario.CATALOGO.value,
+        PermisoUsuario.PROMOCIONES.value,
+    ],
+    "Cocina": [PermisoUsuario.PEDIDOS.value],
+    "Personalizado": [],
+}
+
+
+def _render_admin_users() -> None:
+    st.subheader("Usuarios y permisos")
+    st.caption("Las bajas desactivan el acceso sin eliminar el historial del usuario.")
+    try:
+        with Session(engine) as session:
+            users = AdminManagementService(session).list_users(_current_user())
+    except Exception as exc:
+        _render_action_error("No se pudieron cargar los usuarios.", exc)
+        return
+    st.dataframe(
+        [
+            {
+                "Usuario": user.username,
+                "Estado": "Activo" if user.activo else "Inactivo",
+                "Permisos": ", ".join(
+                    PERMISSION_LABELS[value]
+                    for value in PERMISSION_LABELS
+                    if value in AuthService.effective_permissions(user)
+                ),
+            }
+            for user in users
+        ],
+        hide_index=True,
+        use_container_width=True,
+    )
+    action = _admin_action()
+    permission_values = list(PERMISSION_LABELS)
+    if action == "Alta":
+        profile = st.selectbox("Perfil inicial", list(PERMISSION_PROFILES), key="admin_new_user_profile")
+        defaults = PERMISSION_PROFILES[profile]
+        with st.form(f"admin_user_create_{profile}"):
+            username = st.text_input("Nombre de usuario")
+            password = st.text_input("Contraseña inicial", type="password", help="Debe tener al menos 8 caracteres.")
+            permissions = st.multiselect(
+                "Permisos",
+                permission_values,
+                default=defaults,
+                format_func=lambda value: PERMISSION_LABELS[value],
+            )
+            submitted = st.form_submit_button("Crear usuario", use_container_width=True)
+        if submitted:
+            try:
+                with Session(engine) as session:
+                    AdminManagementService(session).create_user(username, password, permissions, _current_user())
+                _admin_finish("Usuario creado correctamente.")
+            except Exception as exc:
+                _render_action_error("No se pudo crear el usuario.", exc)
+        return
+    if not users:
+        st.info("Todavía no hay usuarios cargados.")
+        return
+    options = {f"{user.username} · {'Activo' if user.activo else 'Inactivo'}": user for user in users}
+    selected = options[st.selectbox("Usuario", list(options), key=f"admin_user_{action}")]
+    if action == "Modificar":
+        current_permissions = [value for value in permission_values if value in AuthService.effective_permissions(selected)]
+        with st.form(f"admin_user_update_{selected.id}"):
+            username = st.text_input("Nombre de usuario", value=selected.username)
+            password = st.text_input("Nueva contraseña (opcional)", type="password", help="Dejala vacía para conservar la actual.")
+            permissions = st.multiselect(
+                "Permisos",
+                permission_values,
+                default=current_permissions,
+                format_func=lambda value: PERMISSION_LABELS[value],
+            )
+            submitted = st.form_submit_button("Guardar cambios", use_container_width=True)
+        if submitted:
+            try:
+                with Session(engine) as session:
+                    AdminManagementService(session).update_user(
+                        selected.id or 0, username, password, permissions, _current_user()
+                    )
+                _refresh_current_user_session()
+                _admin_finish("Usuario y permisos modificados correctamente.")
+            except Exception as exc:
+                _render_action_error("No se pudo modificar el usuario.", exc)
+    else:
+        target_active = not selected.activo
+        verb = "Reactivar" if target_active else "Desactivar"
+        if selected.id == int(st.session_state.user_id) and not target_active:
+            st.info("Tu propio usuario no se puede desactivar desde esta sesión.")
+            return
+        confirmed = st.checkbox(f"Confirmo que quiero {verb.lower()} este usuario.")
+        if st.button(f"{verb} usuario", use_container_width=True, type="primary", disabled=not confirmed):
+            try:
+                with Session(engine) as session:
+                    AdminManagementService(session).set_user_active(selected.id or 0, target_active, _current_user())
+                _admin_finish(f"Usuario {'reactivado' if target_active else 'desactivado'} correctamente.")
+            except Exception as exc:
+                _render_action_error(f"No se pudo {verb.lower()} el usuario.", exc)
 
 
 @st.fragment
@@ -918,6 +1262,21 @@ def _render_brand_media_editor() -> None:
                 st.success("Logo eliminado.")
             except Exception as exc:
                 _render_action_error("No se pudo quitar el logo.", exc)
+
+        st.divider()
+        st.markdown("**Carta del negocio**")
+        menu_url = _read_app_config(MENU_IMAGE_CONFIG_KEY)
+        if menu_url:
+            st.image(menu_url, caption="Carta actual", width=240)
+        menu = st.file_uploader("Imagen de la carta", type=["png", "jpg", "jpeg", "webp"], key="brand_menu_upload")
+        if st.button("Publicar carta", disabled=menu is None):
+            try:
+                url = _save_uploaded_file(menu, "menu")
+                _write_app_config(MENU_IMAGE_CONFIG_KEY, url)
+                st.success("Carta actualizada. El catálogo público mostrará la nueva imagen.")
+                st.image(url, caption="Carta publicada", width=240)
+            except Exception as exc:
+                _render_action_error("No se pudo publicar la carta.", exc)
 
 
 @st.fragment
@@ -1957,19 +2316,6 @@ def _load_promotion_rows() -> tuple[list[Promocion], list[dict[str, Any]], list[
     return promos, rows, products
 
 
-def _load_admin_records(table_name: str) -> list[dict[str, Any]]:
-    try:
-        with Session(engine) as session:
-            records = AdminCrudService(session).list_records(table_name, _current_user())
-        return [
-            {key: _format_display_value(value) for key, value in record.items()}
-            for record in records
-        ]
-    except Exception as exc:
-        _render_action_error("No se pudieron cargar los registros.", exc)
-        return []
-
-
 def _save_promotion(
     *,
     promo_id: int | None,
@@ -2357,7 +2703,7 @@ def _update_order(
 
     with Session(engine) as session:
         current_user = _current_user()
-        AuthService(session).require_admin(current_user)
+        AuthService(session).require_permission(current_user, PermisoUsuario.PEDIDOS)
         pedido = session.get(Pedido, order_id)
         if pedido is None:
             raise ValidationError("Pedido inexistente.")
@@ -2791,6 +3137,8 @@ def _current_user() -> UsuarioRead:
         id=int(st.session_state.user_id),
         username=str(st.session_state.username),
         rol=role,
+        activo=True,
+        permisos=list(st.session_state.get("permissions", [])),
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
     )
@@ -2854,13 +3202,14 @@ def _restore_authentication() -> None:
             st.query_params.pop(AUTH_QUERY_PARAM, None)
         return
     with Session(engine) as session:
-        user = session.get(Usuario, user_id)
+        user = AuthService(session).get_user(user_id)
     if user is None:
         st.query_params.pop(AUTH_QUERY_PARAM, None)
         return
-    st.session_state.user_id = user.id or 0
+    st.session_state.user_id = user.id
     st.session_state.username = user.username
     st.session_state.role = user.rol.value
+    st.session_state.permissions = list(AuthService.effective_permissions(user))
 
 
 def _is_authenticated() -> bool:
@@ -2871,10 +3220,26 @@ def _is_admin() -> bool:
     return _is_authenticated() and st.session_state.get("role") == RolUsuario.ADMIN.value
 
 
+def _has_permission(permission: PermisoUsuario) -> bool:
+    return _is_authenticated() and permission.value in set(st.session_state.get("permissions", []))
+
+
+def _refresh_current_user_session() -> None:
+    with Session(engine) as session:
+        user = AuthService(session).get_user(int(st.session_state.user_id))
+    if user is None:
+        _logout()
+        return
+    st.session_state.username = user.username
+    st.session_state.role = user.rol.value
+    st.session_state.permissions = list(AuthService.effective_permissions(user))
+
+
 def _logout() -> None:
     st.session_state.user_id = 0
     st.session_state.username = ""
     st.session_state.role = ""
+    st.session_state.permissions = []
     st.session_state.auth_message = ""
     st.session_state.show_delivered_orders = False
     st.query_params.pop(AUTH_QUERY_PARAM, None)

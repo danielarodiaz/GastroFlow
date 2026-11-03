@@ -4,6 +4,7 @@ from importlib import import_module
 from typing import Any
 
 _EXPORTS = {
+    "AdminManagementService": ("gastroflow.services.admin_management", "AdminManagementService"),
     "AuthService": ("gastroflow.services.auth", "AuthService"),
     "AdminCrudService": ("gastroflow.services.admin_crud", "AdminCrudService"),
     "CRUD_TABLES": ("gastroflow.services.admin_crud", "CRUD_TABLES"),

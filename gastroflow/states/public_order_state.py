@@ -27,6 +27,7 @@ from gastroflow.models import (
     ProductoCategoria,
     ZonaEnvio,
 )
+from gastroflow.services.brand_media import MENU_IMAGE_CONFIG_KEY
 from gastroflow.services.combo_rules import HALF_PIZZA_CONTEXTS
 from gastroflow.services.media_storage import normalize_media_url
 from gastroflow.services.orders import (
@@ -42,11 +43,12 @@ from gastroflow.services.orders import (
     PublicOrderInput,
     normalize_phone,
 )
-from gastroflow.services.public_catalog import brand_cache, catalog_cache
+from gastroflow.services.public_catalog import PublicReadCache, brand_cache, catalog_cache
 
 MONEY_QUANT = Decimal("0.01")
 BRAND_SETTINGS_PATH = Path("uploaded_files") / "brand" / "settings.json"
 BRAND_LOGO_CONFIG_KEY = "brand.logo_url"
+menu_cache: PublicReadCache[str] = PublicReadCache()
 STORE_NAME = os.getenv("STORE_NAME", "")
 PIZZERIA_WHATSAPP_PHONE = os.getenv("PIZZERIA_WHATSAPP_PHONE", "")
 TRANSFER_TITULAR = os.getenv("TRANSFER_TITULAR", "")
@@ -94,6 +96,16 @@ def _read_brand_logo_url() -> str:
         data = json.loads(BRAND_SETTINGS_PATH.read_text(encoding="utf-8"))
         return str(data.get("logo_url") or "")
     except Exception:
+        return ""
+
+
+def _read_menu_image_url() -> str:
+    try:
+        with Session(engine) as session:
+            setting = session.exec(select(AppConfig).where(AppConfig.key == MENU_IMAGE_CONFIG_KEY)).first()
+            return setting.value if setting and setting.value else ""
+    except Exception:
+        # An unavailable optional image must not block the catalog.
         return ""
 
 
@@ -197,7 +209,7 @@ def _public_catalog_rows():
             .outerjoin(Producto, (Producto.id == ProductoCategoria.producto_id) & (Producto.activo == True))
             .where(Categoria.visible_cliente == True, Categoria.es_automatica == False, Categoria.activa == True)
         ).all()
-        zones = session.exec(select(ZonaEnvio)).all()
+        zones = session.exec(select(ZonaEnvio).where(ZonaEnvio.activa == True)).all()
         combos = session.exec(select(ComboRegla)).all()
         addons = session.exec(select(Agregado).where(Agregado.activo == True)).all()
         addon_categories = session.exec(select(AgregadoCategoria)).all()
@@ -211,6 +223,12 @@ def _public_catalog_rows():
 
 
 class BrandState(rx.State):
+    menu_image_url: str = ""
+
+    @rx.var
+    def menu_whatsapp_url(self) -> str:
+        return "https://wa.me/?text=" + quote(f"Mirá la carta de Las Pizzas de Alejo: {self.menu_image_url}", safe="")
+
     logo_url: str = _normalize_upload_path(os.getenv("BRAND_LOGO_URL", ""))
 
     async def load_brand(self) -> None:
@@ -335,12 +353,14 @@ class PublicOrderState(rx.State):
         yield
         try:
             # The logo must not hold up the catalog in a separate event first.
-            rows, logo_url = await asyncio.gather(
+            rows, logo_url, menu_url = await asyncio.gather(
                 asyncio.to_thread(catalog_cache.get, _public_catalog_rows),
                 asyncio.to_thread(brand_cache.get, _read_brand_logo_url),
+                asyncio.to_thread(menu_cache.get, _read_menu_image_url),
             )
             brand = await self.get_state(BrandState)
             brand.logo_url = _normalize_upload_path(logo_url)
+            brand.menu_image_url = _normalize_upload_path(menu_url)
             if len(rows) == 5:
                 categories, products, product_categories, zones, combos = rows
                 addons, addon_categories = [], []

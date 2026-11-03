@@ -2,7 +2,7 @@ from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Column, Enum as SAEnum, Numeric, String, Text
+from sqlalchemy import Boolean, Column, Enum as SAEnum, JSON, Numeric, String, Text
 from sqlmodel import Field, SQLModel
 
 from gastroflow.domain.enums import EstadoPedido, FormaPago, RolUsuario
@@ -12,6 +12,8 @@ from gastroflow.models.base import IdMixin, coordinate_column, money_column, qua
 class UsuarioBase(SQLModel):
     username: str = Field(index=True, unique=True, max_length=80)
     rol: RolUsuario = Field(sa_column=Column(SAEnum(RolUsuario, name="rol_usuario"), nullable=False))
+    activo: bool = Field(default=True, sa_column=Column(Boolean, nullable=False))
+    permisos: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
 
 
 class Usuario(UsuarioBase, IdMixin, table=True):
@@ -30,6 +32,20 @@ class UsuarioRead(UsuarioBase):
     id: int
     created_at: datetime
     updated_at: datetime
+
+
+class CambioAdministrativo(IdMixin, table=True):
+    __tablename__ = "cambio_administrativo"
+
+    usuario_id: Optional[int] = Field(default=None, foreign_key="usuario.id", index=True)
+    usuario_nombre: str = Field(max_length=80)
+    seccion: str = Field(max_length=60, index=True)
+    accion: str = Field(max_length=30)
+    registro_id: Optional[int] = Field(default=None)
+    resumen: str = Field(sa_column=Column(Text, nullable=False))
+    datos_anteriores: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    datos_nuevos: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    created_at: datetime = timestamp_field()
 
 
 class ClienteBase(SQLModel):

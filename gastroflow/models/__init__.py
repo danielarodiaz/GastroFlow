@@ -51,6 +51,7 @@ from gastroflow.models.catalog import (
     ZonaEnvioRead,
 )
 from gastroflow.models.transactional import (
+    CambioAdministrativo,
     Cliente,
     ClienteBase,
     ClienteCreate,
@@ -102,6 +103,7 @@ __all__ = [
     "CategoriaBase",
     "CategoriaCreate",
     "CategoriaRead",
+    "CambioAdministrativo",
     "Cliente",
     "ClienteBase",
     "ClienteCreate",

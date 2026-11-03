@@ -179,6 +179,7 @@ class ComboReglaRead(ComboReglaBase):
 class ZonaEnvioBase(SQLModel):
     nombre: str = Field(max_length=140)
     costo: Decimal = Field(sa_column=money_column())
+    activa: bool = Field(default=True, sa_column=Column(Boolean, nullable=False))
 
 
 class ZonaEnvio(ZonaEnvioBase, IdMixin, table=True):

@@ -135,6 +135,10 @@ extraídos son una propuesta editable: el gasto sólo se confirma cuando los ít
 Para habilitar el modelo documental ejecutar
 `python -m alembic upgrade head` después de desplegar la revisión `0015_expense_documents_payments`.
 
+La gestión administrativa intuitiva de zonas, categorías, agregados y usuarios requiere
+la revisión `0016_admin_management`. Esta migración agrega bajas reversibles, permisos por
+módulo y auditoría; se aplica con `python -m alembic upgrade head` antes de iniciar la app interna.
+
 En Streamlit Community Cloud, `packages.txt` instala el motor `tesseract-ocr` y el modelo español.
 En Windows local se debe instalar Tesseract OCR con el idioma Spanish y reiniciar la terminal; las
 dependencias Python se instalan con `pip install -r requirements-internal.txt`.

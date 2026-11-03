@@ -7,6 +7,7 @@ from decimal import Decimal
 from sqlalchemy import func
 from sqlmodel import Session, select
 
+from gastroflow.domain.enums import PermisoUsuario
 from gastroflow.domain.errors import ValidationError
 from gastroflow.models import (
     Gasto,
@@ -98,7 +99,7 @@ class ExpenseService:
         *,
         commit: bool = True,
     ) -> GastoRead:
-        AuthService(self.session).require_owner_or_admin(current_user)
+        AuthService(self.session).require_permission(current_user, PermisoUsuario.GASTOS)
         self._validate(data)
 
         detail_rows: list[tuple[ExpenseDetailInput, MotivoGasto, Marca | None, Decimal]] = []
@@ -150,7 +151,7 @@ class ExpenseService:
         data: ExpenseTicketInput,
         current_user: UsuarioRead,
     ) -> GastoRead:
-        AuthService(self.session).require_owner_or_admin(current_user)
+        AuthService(self.session).require_permission(current_user, PermisoUsuario.GASTOS)
         self._validate(data)
         gasto = self.session.get(Gasto, expense_id)
         if gasto is None:
@@ -200,7 +201,7 @@ class ExpenseService:
         return self._to_read(gasto)
 
     def delete_expense_ticket(self, expense_id: int, current_user: UsuarioRead) -> str:
-        AuthService(self.session).require_owner_or_admin(current_user)
+        AuthService(self.session).require_permission(current_user, PermisoUsuario.GASTOS)
         gasto = self.session.get(Gasto, expense_id)
         if gasto is None:
             raise ValidationError("El gasto no existe.")

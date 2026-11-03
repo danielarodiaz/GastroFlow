@@ -8,7 +8,7 @@ from sqlalchemy import text
 
 from sqlmodel import Session, select
 
-from gastroflow.domain.enums import EstadoPedido, FormaPago, ReglaPrecioCombo, TipoPromocion
+from gastroflow.domain.enums import EstadoPedido, FormaPago, PermisoUsuario, ReglaPrecioCombo, TipoPromocion
 from gastroflow.domain.errors import ValidationError
 from gastroflow.domain.order_state import assert_valid_order_transition
 from gastroflow.models import (
@@ -222,7 +222,7 @@ class OrderService:
     ) -> PedidoRead:
         from gastroflow.services.auth import AuthService
 
-        AuthService(self.session).require_owner_or_admin(current_user)
+        AuthService(self.session).require_permission(current_user, PermisoUsuario.PEDIDOS)
         pedido = self.session.get(Pedido, pedido_id)
         if pedido is None:
             raise ValidationError("Pedido inexistente.")
@@ -263,7 +263,7 @@ class OrderService:
             return Decimal("0.00")
 
         zona = self.session.get(ZonaEnvio, zona_envio_id)
-        if zona is None:
+        if zona is None or not zona.activa:
             raise ValidationError("Zona de envio inexistente.")
         return self._money(zona.costo)
 

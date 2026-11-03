@@ -6,6 +6,15 @@ class RolUsuario(str, Enum):
     DUENO = "dueno"
 
 
+class PermisoUsuario(str, Enum):
+    PEDIDOS = "pedidos"
+    GASTOS = "gastos"
+    CATALOGO = "catalogo"
+    PROMOCIONES = "promociones"
+    CONFIGURACION = "configuracion"
+    USUARIOS = "usuarios"
+
+
 class EstadoPedido(str, Enum):
     PEDIDO = "pedido"
     PENDIENTE_CONFIRMACION = "pendiente_confirmacion"

@@ -195,6 +195,37 @@ def public_shell(*children: rx.Component) -> rx.Component:
     )
 
 
+def menu_share_dialog() -> rx.Component:
+    return rx.cond(
+        BrandState.menu_image_url != "",
+        rx.dialog.root(
+            rx.dialog.trigger(outline_button("Compartir la carta")),
+            rx.dialog.content(
+                rx.dialog.title("Carta de Las Pizzas de Alejo"),
+                rx.dialog.description("Mirá la carta y compartí el enlace."),
+                rx.image(src=BrandState.menu_image_url, alt="Carta de Las Pizzas de Alejo", width="100%", margin="0.75rem 0"),
+                rx.flex(
+                    rx.link(
+                        "Compartir",
+                        href=BrandState.menu_whatsapp_url,
+                        target="_blank",
+                        rel="noopener noreferrer",
+                        custom_attrs={"data-public-share-url": BrandState.menu_image_url},
+                    ),
+                    rx.link("Abrir imagen", href=BrandState.menu_image_url, target="_blank", rel="noopener noreferrer"),
+                    rx.dialog.close(outline_button("Cerrar")),
+                    gap="3",
+                    align="center",
+                    wrap="wrap",
+                ),
+                max_width="620px",
+                max_height="85dvh",
+                overflow_y="auto",
+            ),
+        ),
+    )
+
+
 def hero() -> rx.Component:
     return rx.box(
         rx.vstack(
@@ -212,6 +243,7 @@ def hero() -> rx.Component:
                 color="#5a4b38",
                 font_size="1.05rem",
             ),
+            menu_share_dialog(),
             spacing="2",
             align="start",
         ),
@@ -316,8 +348,6 @@ def products_view() -> rx.Component:
     return rx.vstack(
         rx.hstack(
             outline_button("Volver", on_click=PublicOrderState.show_categories, navigation=True),
-            rx.spacer(),
-            pill_button("Ver mi pedido", on_click=PublicOrderState.show_cart, navigation=True, background=RED),
             width="100%",
         ),
         rx.heading(rx.cond(PublicOrderState.special_catalog, "Pedido especial", "Productos disponibles"), size="7", font_family=FONT_STACK, color=GREEN),
