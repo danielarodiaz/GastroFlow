@@ -7,7 +7,7 @@ Esta guia corresponde a la app interna de gestion.
 Streamlit debe apuntar al archivo:
 
 ```text
-streamlit_app.py
+streamlit_deploy/streamlit_app.py
 ```
 
 Ese archivo delega en `gastroflow.internal_app.streamlit_app`.
@@ -17,8 +17,12 @@ Ese archivo delega en `gastroflow.internal_app.streamlit_app`.
 Usar:
 
 ```text
-requirements-internal.txt
+streamlit_deploy/requirements.txt
 ```
+
+El archivo de dependencias del entrypoint fija la versión de Streamlit. No debe
+reemplazarse por un rango abierto: Community Cloud podría iniciar el servidor con
+un frontend distinto al probado y dejar módulos del navegador incompatibles en caché.
 
 ## Secrets
 
