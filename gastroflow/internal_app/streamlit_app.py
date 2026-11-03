@@ -210,7 +210,7 @@ def _render_orders() -> None:
 
 @st.fragment(run_every=ORDER_REFRESH_INTERVAL)
 def _render_live_orders() -> None:
-    orders = [row for row in _load_order_rows() if row["estado"] in ACTIVE_ORDER_STATES]
+    orders = _load_order_rows(active_only=True, include_details=False)
     orders = _prioritize_pending_special_orders(orders)
     metric_cols = st.columns(4)
     total_amount = sum((row["monto_total"] for row in orders), Decimal("0.00"))
@@ -243,7 +243,8 @@ def _render_live_orders() -> None:
                 st.info("Pedido especial")
             if cols[5].button("Ver detalles", key=f"order_detail_{row['id']}", use_container_width=True):
                 st.session_state.selected_order_id = row["id"]
-                _show_order_detail(row)
+                detailed_rows = _load_order_rows(order_id=row["id"])
+                _show_order_detail(detailed_rows[0] if detailed_rows else row)
 
             if _has_permission(PermisoUsuario.PEDIDOS) and st.button(
                 "Modificar pedido",
@@ -2054,27 +2055,72 @@ def _render_placeholder(title: str) -> None:
 
 
 @st.cache_data(ttl=4, show_spinner=False)
-def _load_order_rows() -> list[dict[str, Any]]:
+def _load_order_rows(
+    *,
+    active_only: bool = False,
+    include_details: bool = True,
+    order_id: int | None = None,
+) -> list[dict[str, Any]]:
     combo_product = aliased(Producto)
     with Session(engine) as session:
-        order_rows = session.exec(
+        order_statement = (
             select(Pedido, Cliente, ZonaEnvio)
             .select_from(Pedido)
             .join(Cliente, Cliente.id == Pedido.cliente_id)
             .outerjoin(ZonaEnvio, ZonaEnvio.id == Pedido.zona_envio_id)
-        ).all()
+        )
+        if order_id is not None:
+            order_statement = order_statement.where(Pedido.id == order_id)
+        elif active_only:
+            order_statement = order_statement.where(
+                Pedido.estado.in_(
+                    [
+                        EstadoPedido.PEDIDO,
+                        EstadoPedido.PENDIENTE_CONFIRMACION,
+                        EstadoPedido.EN_PROCESO,
+                    ]
+                )
+            )
+        order_rows = session.exec(order_statement).all()
+        order_ids = [pedido.id for pedido, _, _ in order_rows if pedido.id is not None]
+        if not order_ids:
+            return []
         detail_rows = session.exec(
             select(PedidoItem, Producto, combo_product, Categoria)
             .select_from(PedidoItem)
             .join(Producto, Producto.id == PedidoItem.producto_id)
             .outerjoin(combo_product, combo_product.id == PedidoItem.producto_combo_id)
             .join(Categoria, Categoria.id == PedidoItem.categoria_venta_id)
+            .where(PedidoItem.pedido_id.in_(order_ids))
         ).all()
-        payment_rows = session.exec(select(PedidoPago).order_by(PedidoPago.id)).all()
-        addon_rows = session.exec(select(PedidoItemAgregado).order_by(PedidoItemAgregado.id)).all()
-        revision_rows = session.exec(
-            select(PedidoRevision).order_by(PedidoRevision.created_at.desc(), PedidoRevision.id.desc())
-        ).all()
+        item_ids = [item.id for item, _, _, _ in detail_rows if item.id is not None]
+        payment_rows = (
+            session.exec(
+                select(PedidoPago)
+                .where(PedidoPago.pedido_id.in_(order_ids))
+                .order_by(PedidoPago.id)
+            ).all()
+            if include_details
+            else []
+        )
+        addon_rows = (
+            session.exec(
+                select(PedidoItemAgregado)
+                .where(PedidoItemAgregado.pedido_item_id.in_(item_ids))
+                .order_by(PedidoItemAgregado.id)
+            ).all()
+            if include_details and item_ids
+            else []
+        )
+        revision_rows = (
+            session.exec(
+                select(PedidoRevision)
+                .where(PedidoRevision.pedido_id.in_(order_ids))
+                .order_by(PedidoRevision.created_at.desc(), PedidoRevision.id.desc())
+            ).all()
+            if include_details
+            else []
+        )
 
     payments_by_order: dict[int, list[PedidoPago]] = {}
     for payment in payment_rows:
