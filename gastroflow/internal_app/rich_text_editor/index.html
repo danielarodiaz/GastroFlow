@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px Arial,sans-serif; color:#222; background:#fff; }
+  .toolbar { display:flex; flex-wrap:wrap; gap:5px; padding:7px; border:1px solid #b8b8b8; border-radius:6px 6px 0 0; background:#f4f4f4; }
+  button,select,input { height:30px; background:#fff; color:#222; border:1px solid #aaa; border-radius:4px; cursor:pointer; }
+  button { min-width:30px; }
+  button:hover { background:#e3e9e5; }
+  #editor { height:200px; overflow:auto; padding:12px; border:1px solid #aaa; border-top:0; border-radius:0 0 6px 6px; font-size:16px; outline-color:#24633d; }
+  #editor p { margin:0 0 8px; }
+  #editor:empty:before { content:'Escribí el mensaje…'; color:#777; }
+  #count { font-size:12px; padding:4px; color:#555; }
+</style>
+<div class="toolbar" role="toolbar" aria-label="Formato del mensaje">
+  <button type="button" data-command="bold" title="Negrita" aria-label="Negrita"><b>B</b></button>
+  <button type="button" data-command="italic" title="Cursiva" aria-label="Cursiva"><i>I</i></button>
+  <button type="button" data-command="underline" title="Subrayado" aria-label="Subrayado"><u>U</u></button>
+  <select id="block" aria-label="Tipo de texto"><option value="p">Texto normal</option><option value="h2">Título</option><option value="h3">Subtítulo</option></select>
+  <select id="font" aria-label="Tipografía"><option value="Arial">Arial</option><option value="Georgia">Georgia</option><option value="Courier New">Monoespaciada</option></select>
+  <input id="color" type="color" value="#222222" title="Color de texto" aria-label="Color de texto">
+  <button type="button" data-command="justifyLeft" title="Alinear a la izquierda" aria-label="Alinear a la izquierda">≡←</button>
+  <button type="button" data-command="justifyCenter" title="Centrar" aria-label="Centrar">≡</button>
+  <button type="button" data-command="justifyRight" title="Alinear a la derecha" aria-label="Alinear a la derecha">→≡</button>
+  <button type="button" data-command="insertUnorderedList" title="Lista" aria-label="Lista">• ≡</button>
+  <button type="button" data-command="removeFormat" title="Quitar formato" aria-label="Quitar formato">Tx</button>
+</div>
+<div id="editor" role="textbox" aria-label="Mensaje" aria-multiline="true" contenteditable="true"></div>
+<div id="count" aria-live="polite"></div>
+<script>
+  const editor = document.getElementById('editor');
+  let initialized = false, range = null, lastHTML = null;
+  function send(type, extra = {}) {
+    window.parent.postMessage({isStreamlitMessage:true, type, ...extra}, '*');
+  }
+  function publish() {
+    document.getElementById('count').textContent = `${editor.innerText.length} / 4000 caracteres`;
+    if (lastHTML === editor.innerHTML) return;
+    lastHTML = editor.innerHTML;
+    send('streamlit:setComponentValue', {value:{html:lastHTML}, dataType:'json'});
+  }
+  function remember() {
+    const selection = window.getSelection();
+    if (selection.rangeCount && editor.contains(selection.anchorNode) && editor.contains(selection.focusNode)) {
+      range = selection.getRangeAt(0).cloneRange();
+    }
+  }
+  function command(name, value = null) {
+    editor.focus();
+    if (range) {
+      const selection = window.getSelection();
+      selection.removeAllRanges(); selection.addRange(range);
+    }
+    document.execCommand('styleWithCSS', false, true);
+    document.execCommand(name, false, value);
+    remember(); publish();
+  }
+  document.querySelectorAll('[data-command]').forEach(button => {
+    button.addEventListener('mousedown', event => event.preventDefault());
+    button.addEventListener('click', () => command(button.dataset.command));
+  });
+  document.getElementById('font').addEventListener('change', event => command('fontName', event.target.value));
+  document.getElementById('block').addEventListener('change', event => command('formatBlock', event.target.value));
+  document.getElementById('color').addEventListener('input', event => command('foreColor', event.target.value));
+  editor.addEventListener('input', () => {remember(); publish();});
+  editor.addEventListener('blur', publish);
+  document.addEventListener('selectionchange', remember);
+  editor.addEventListener('paste', event => {
+    event.preventDefault();
+    document.execCommand('insertText', false, event.clipboardData.getData('text/plain'));
+    publish();
+  });
+  window.addEventListener('message', event => {
+    if (event.source !== window.parent || event.data.type !== 'streamlit:render') return;
+    if (!initialized) {
+      editor.innerHTML = event.data.args.initial_html || '';
+      lastHTML = editor.innerHTML;
+      initialized = true;
+      document.getElementById('count').textContent = `${editor.innerText.length} / 4000 caracteres`;
+    }
+    send('streamlit:setFrameHeight', {height:document.body.scrollHeight});
+  });
+  send('streamlit:componentReady', {apiVersion:1});
+  new ResizeObserver(() => send('streamlit:setFrameHeight', {height:document.body.scrollHeight})).observe(document.body);
+</script>
+</html>

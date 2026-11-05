@@ -19,6 +19,7 @@ class AvisoPublico(IdMixin, SQLModel, table=True):
 
     titulo: str = Field(max_length=160)
     mensaje: str = Field(max_length=4000)
+    mensaje_html: str | None = Field(default=None, max_length=20000)
     tipo: str = Field(default="informativo", max_length=20)
     accion: str = Field(default="ninguna", max_length=30)
     habilitado: bool = True

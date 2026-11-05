@@ -46,6 +46,7 @@ from gastroflow.services.orders import (
 )
 from gastroflow.services.public_catalog import PublicReadCache, brand_cache, catalog_cache
 from gastroflow.services.public_notices import active_notices, argentina_now, delivery_block, notice_rows
+from gastroflow.services.notice_formatting import notice_html
 
 MONEY_QUANT = Decimal("0.01")
 BRAND_SETTINGS_PATH = Path("uploaded_files") / "brand" / "settings.json"
@@ -254,8 +255,9 @@ class PublicOrderState(rx.State):
     @rx.var
     def current_notice(self) -> dict[str, str]:
         if not self.notice_queue:
-            return {"titulo": "", "mensaje": "", "tipo": ""}
-        return {key: str(self.notice_queue[0][key]) for key in ("titulo", "mensaje", "tipo")}
+            return {"titulo": "", "mensaje": "", "tipo": "", "html": ""}
+        return {**{key: str(self.notice_queue[0][key]) for key in ("titulo", "mensaje", "tipo")},
+                "html": notice_html(self.notice_queue[0])}
 
     @rx.var
     def delivery_restriction_message(self) -> str:

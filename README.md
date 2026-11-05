@@ -148,9 +148,14 @@ El proyecto debe esperar confirmacion antes de avanzar a la Fase 8.
 ### Avisos y campañas de la app pública
 
 Antes de iniciar ambas aplicaciones con esta función, ejecutar
-`python -m alembic upgrade head` (revisión `0017_public_notices`).
-En Gestión interna → Catálogo → Avisos y campañas se pueden crear, editar,
-habilitar y deshabilitar mensajes, programar su vigencia y previsualizar su texto.
+`python -m alembic upgrade head` (revisión `0018_notice_rich_text`).
+En Gestión interna → Admin → Avisos y Campañas (permiso Configuración) se pueden
+crear, editar, eliminar, habilitar y deshabilitar mensajes, programar su vigencia
+y previsualizarlos antes de guardar. El editor permite negrita, cursiva, subrayado,
+tipografía, color, títulos, listas y alineación. El formato se filtra tanto para
+la vista previa como para la ventana pública, que no muestra el tipo de aviso.
+«Sin fecha de fin» deshabilita inmediatamente la fecha y hora finales.
+En Catálogo → Marca e imágenes → Carta del negocio, «Quitar carta» retira su publicación.
 Todos los horarios son de Argentina; el instante de fin es exclusivo.
 Los avisos informativos se muestran antes que las ofertas, ordenados por prioridad
 (menor número primero) y luego por ID. Cada ventana se cierra con «Cerrar»;

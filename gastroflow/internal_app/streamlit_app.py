@@ -829,7 +829,6 @@ def _render_catalog() -> None:
     categories, product_rows, products = _load_catalog_rows()
     if _has_permission(PermisoUsuario.CATALOGO):
         _render_brand_media_editor()
-        render_public_notice_editor(engine)
     category_tab, product_tab = st.tabs(["Categorias", "Productos por categoria"])
 
     with category_tab:
@@ -878,7 +877,7 @@ def _render_admin() -> None:
     st.title("Admin")
     sections: list[str] = []
     if _has_permission(PermisoUsuario.CONFIGURACION):
-        sections.extend(["Zonas de envío", "Categorías", "Agregados"])
+        sections.extend(["Zonas de envío", "Categorías", "Agregados", "Avisos y Campañas"])
     if _has_permission(PermisoUsuario.USUARIOS):
         sections.append("Usuarios y permisos")
     if not sections:
@@ -900,6 +899,8 @@ def _render_admin() -> None:
         _render_admin_categories()
     elif section == "Agregados":
         _render_admin_addons()
+    elif section == "Avisos y Campañas":
+        render_public_notice_editor(engine)
     else:
         _render_admin_users()
 
@@ -1280,6 +1281,12 @@ def _render_brand_media_editor() -> None:
                 st.image(url, caption="Carta publicada", width=240)
             except Exception as exc:
                 _render_action_error("No se pudo publicar la carta.", exc)
+        if st.button("Quitar carta", disabled=not menu_url):
+            try:
+                _write_app_config(MENU_IMAGE_CONFIG_KEY, "")
+                st.success("Carta quitada. Dejará de mostrarse en la app pública al actualizar la página.")
+            except Exception as exc:
+                _render_action_error("No se pudo quitar la carta.", exc)
 
 
 @st.fragment

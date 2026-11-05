@@ -826,9 +826,14 @@ def public_notice_dialog() -> rx.Component:
     return rx.dialog.root(
         rx.dialog.content(
             rx.dialog.title(PublicOrderState.current_notice["titulo"]),
-            rx.dialog.description(rx.cond(PublicOrderState.current_notice["tipo"] == "oferta", "Oferta", "Aviso informativo")),
+            rx.dialog.description("Mensaje del local", style={"position": "absolute", "width": "1px", "height": "1px", "overflow": "hidden", "clip_path": "inset(50%)"}),
             rx.box(
-                rx.text(PublicOrderState.current_notice["mensaje"], white_space="pre-wrap"),
+                rx.html(PublicOrderState.current_notice["html"], style={
+                    "overflow_wrap": "anywhere", "& h2": {"font_size": "1.5em", "font_weight": "bold"},
+                    "& h3": {"font_size": "1.17em", "font_weight": "bold"},
+                    "& p": {"margin_bottom": "0.5rem"}, "& ul": {"list_style_type": "disc", "padding_left": "1.5rem"},
+                    "& ol": {"list_style_type": "decimal", "padding_left": "1.5rem"},
+                }),
                 overflow_y="auto", max_height="55dvh", padding="1rem 0",
             ),
             pill_button("Cerrar", on_click=PublicOrderState.close_notice, width="100%"),

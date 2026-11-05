@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 
 from gastroflow.domain.errors import ValidationError
 from gastroflow.models import AvisoPublico
+from gastroflow.services.notice_formatting import clean_notice_html
 
 
 def argentina_now() -> datetime:
@@ -55,6 +56,14 @@ def validate_notice(notice: AvisoPublico) -> None:
         raise ValidationError("Completá el título y el mensaje.")
     if len(notice.titulo) > 160 or len(notice.mensaje) > 4000:
         raise ValidationError("El título admite hasta 160 caracteres y el mensaje hasta 4000.")
+    if notice.mensaje_html is not None:
+        if len(notice.mensaje_html) > 20000:
+            raise ValidationError("El mensaje tiene demasiado formato. Simplificá su contenido.")
+        notice.mensaje_html, notice.mensaje = clean_notice_html(notice.mensaje_html)
+        if not notice.mensaje.strip():
+            raise ValidationError("Completá el mensaje.")
+        if len(notice.mensaje) > 4000:
+            raise ValidationError("El mensaje admite hasta 4000 caracteres.")
     if notice.tipo not in {"informativo", "oferta"} or notice.accion not in {"ninguna", "suspender_envios"}:
         raise ValidationError("Tipo o acción de aviso inválidos.")
     if notice.accion != "ninguna" and notice.tipo != "informativo":
