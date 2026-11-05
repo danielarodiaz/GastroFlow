@@ -8,4 +8,4 @@ from gastroflow.states.public_order_state import PublicOrderState
 
 app = rx.App()
 app.add_page(health_page, route="/ping")
-app.add_page(public_page, route="/", on_load=PublicOrderState.load_catalog)
+app.add_page(public_page, route="/", on_load=[PublicOrderState.load_notices, PublicOrderState.load_catalog])

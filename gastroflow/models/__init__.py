@@ -1,4 +1,5 @@
 from sqlmodel import SQLModel
+from gastroflow.models.public_notice import AvisoPublico
 from gastroflow.models import normalization as _normalization
 
 from gastroflow.models.catalog import (
@@ -89,6 +90,7 @@ from gastroflow.models.transactional import (
 )
 
 __all__ = [
+    "AvisoPublico",
     "Agregado",
     "AgregadoBase",
     "AgregadoCategoria",

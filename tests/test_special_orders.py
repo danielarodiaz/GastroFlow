@@ -206,7 +206,7 @@ def test_mixed_order_is_pending_until_accepted_and_snapshot_survives_catalog_cha
     relation.permite_pedido_especial = False
     session.add(relation)
     session.commit()
-    owner = SimpleNamespace(rol=RolUsuario.DUENO)
+    owner = SimpleNamespace(rol=RolUsuario.DUENO, permisos=[])
     with pytest.raises(ValidationError, match="Primero aceptá"):
         service.transition_order(result.pedido.id, EstadoPedido.EN_PROCESO, owner)
     monkeypatch.setattr(internal, "engine", session.get_bind())
@@ -226,7 +226,7 @@ def test_local_can_reject_special_request_without_changing_prices(specials):
     session, _, products, _ = specials
     service = OrderService(session)
     result = service.create_public_order(_payload([OrderItemInput(products["Napolitana"].id, 1)]))
-    rejected = service.transition_order(result.pedido.id, EstadoPedido.CANCELADO, SimpleNamespace(rol=RolUsuario.DUENO))
+    rejected = service.transition_order(result.pedido.id, EstadoPedido.CANCELADO, SimpleNamespace(rol=RolUsuario.DUENO, permisos=[]))
     assert rejected.estado == EstadoPedido.CANCELADO
     assert rejected.monto_total == result.pedido.monto_total
 
@@ -237,7 +237,7 @@ def test_staff_interface_accepts_availability_before_preparation(specials, monke
     session, _, products, _ = specials
     result = OrderService(session).create_public_order(_payload([OrderItemInput(products["Fugazzetta"].id, 1)]))
     monkeypatch.setattr(internal, "engine", session.get_bind())
-    monkeypatch.setattr(internal, "_current_user", lambda: SimpleNamespace(rol=RolUsuario.DUENO))
+    monkeypatch.setattr(internal, "_current_user", lambda: SimpleNamespace(rol=RolUsuario.DUENO, permisos=[]))
     internal._load_order_rows.clear()
     # AppTest reruns the full script rather than issuing fragment-only reruns.
     rerun = internal.st.rerun

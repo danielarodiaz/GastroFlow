@@ -144,3 +144,22 @@ En Windows local se debe instalar Tesseract OCR con el idioma Spanish y reinicia
 dependencias Python se instalan con `pip install -r requirements-internal.txt`.
 
 El proyecto debe esperar confirmacion antes de avanzar a la Fase 8.
+
+### Avisos y campañas de la app pública
+
+Antes de iniciar ambas aplicaciones con esta función, ejecutar
+`python -m alembic upgrade head` (revisión `0017_public_notices`).
+En Gestión interna → Catálogo → Avisos y campañas se pueden crear, editar,
+habilitar y deshabilitar mensajes, programar su vigencia y previsualizar su texto.
+Todos los horarios son de Argentina; el instante de fin es exclusivo.
+Los avisos informativos se muestran antes que las ofertas, ordenados por prioridad
+(menor número primero) y luego por ID. Cada ventana se cierra con «Cerrar»;
+los mensajes cerrados no reaparecen en la misma visita. Al volver a cargar la
+página se vuelven a leer las novedades y los avisos editados.
+
+La acción «Suspender envíos» se evalúa por la fecha y hora de entrega, incluso
+cuando la restricción todavía no comenzó al momento de comprar. Se controla
+también al guardar el pedido, con datos actuales de la base. Retiro sigue permitido.
+Por ejemplo: inicio 07-11-2026 a las 00:00 y fin 12-11-2026 a las 18:00 permite
+envíos desde las 18:00 del día 12. Ajustar ese horario al regreso real del local.
+Los avisos de ofertas no crean descuentos: sus reglas se configuran en Promos.

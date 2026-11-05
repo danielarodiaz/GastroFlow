@@ -182,6 +182,8 @@ def test_streamlit_editor_selects_categories_and_saves_package_composition(catal
     session, ids = catalog
     monkeypatch.setattr(streamlit_app, "engine", session.get_bind())
     monkeypatch.setattr(streamlit_app, "_is_admin", lambda: True)
+    # Editors now use module permissions rather than the legacy role check.
+    monkeypatch.setattr(streamlit_app, "_has_permission", lambda permission: True)
 
     def page():
         from gastroflow.internal_app.streamlit_app import _render_promotions

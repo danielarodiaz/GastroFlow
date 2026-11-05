@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import hashlib
 import os
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -44,6 +45,7 @@ from gastroflow.services.orders import (
     normalize_phone,
 )
 from gastroflow.services.public_catalog import PublicReadCache, brand_cache, catalog_cache
+from gastroflow.services.public_notices import active_notices, argentina_now, delivery_block, notice_rows
 
 MONEY_QUANT = Decimal("0.01")
 BRAND_SETTINGS_PATH = Path("uploaded_files") / "brand" / "settings.json"
@@ -107,6 +109,11 @@ def _read_menu_image_url() -> str:
     except Exception:
         # An unavailable optional image must not block the catalog.
         return ""
+
+
+def _read_public_notices() -> list[dict[str, Any]]:
+    with Session(engine) as session:
+        return notice_rows(session)
 
 
 def _normalize_upload_path(value: str | None) -> str:
@@ -236,6 +243,47 @@ class BrandState(rx.State):
 
 
 class PublicOrderState(rx.State):
+    notice_rules: list[dict[str, Any]] = []
+    notice_queue: list[dict[str, Any]] = []
+    dismissed_notices: list[str] = []
+
+    @rx.var
+    def notice_open(self) -> bool:
+        return bool(self.notice_queue)
+
+    @rx.var
+    def current_notice(self) -> dict[str, str]:
+        if not self.notice_queue:
+            return {"titulo": "", "mensaje": "", "tipo": ""}
+        return {key: str(self.notice_queue[0][key]) for key in ("titulo", "mensaje", "tipo")}
+
+    @rx.var
+    def delivery_restriction_message(self) -> str:
+        now = argentina_now()
+        try:
+            day = _parse_delivery_date(self.fecha_entrega) if self.fecha_entrega.strip() else now.date()
+            hour = time.fromisoformat(_complete_time(self.horario_entrega)) if self.horario_entrega.strip() else None
+        except ValueError:
+            return ""
+        return delivery_block(self.notice_rules, day, hour)
+
+    async def load_notices(self):
+        try:
+            self.notice_rules = await asyncio.to_thread(_read_public_notices)
+            queue = []
+            for row in active_notices(self.notice_rules):
+                key = hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest()
+                if key not in self.dismissed_notices:
+                    queue.append({**row, "visit_key": key})
+            self.notice_queue = queue
+        except Exception as exc:
+            self.technical_error = str(exc)
+
+    def close_notice(self) -> None:
+        if self.notice_queue:
+            self.dismissed_notices = [*self.dismissed_notices, self.notice_queue[0]["visit_key"]]
+            self.notice_queue = self.notice_queue[1:]
+
     categories: list[dict[str, Any]] = []
     products: list[dict[str, Any]] = []
     visible_products: list[dict[str, Any]] = []
@@ -692,6 +740,12 @@ class PublicOrderState(rx.State):
         self.horario_entrega = _mask_time(value)
 
     def set_delivery_mode(self, value: str) -> None:
+        if value not in {"retiro", "delivery"}:
+            return
+        if value == "delivery" and self.delivery_restriction_message:
+            self.message = self.delivery_restriction_message
+            return
+        self.message = ""
         self.delivery_mode = value
         if value == "retiro":
             self.direccion_delivery = ""

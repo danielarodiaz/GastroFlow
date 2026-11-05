@@ -62,6 +62,7 @@ from gastroflow.services import (
     normalize_phone,
 )
 from gastroflow.services.brand_media import MENU_IMAGE_CONFIG_KEY
+from gastroflow.internal_app.public_notice_editor import render_public_notice_editor
 from gastroflow.services.media_storage import save_media_bytes
 from gastroflow.services.expense_documents import ExpenseDocumentDraft, HybridExpenseDocumentReader
 from gastroflow.services.promotions import configure_promotion
@@ -828,6 +829,7 @@ def _render_catalog() -> None:
     categories, product_rows, products = _load_catalog_rows()
     if _has_permission(PermisoUsuario.CATALOGO):
         _render_brand_media_editor()
+        render_public_notice_editor(engine)
     category_tab, product_tab = st.tabs(["Categorias", "Productos por categoria"])
 
     with category_tab:

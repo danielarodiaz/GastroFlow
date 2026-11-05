@@ -145,6 +145,10 @@ class OrderService:
         if not data.nombre_apellido.strip():
             raise ValidationError("El nombre y apellido son obligatorios.")
 
+        if data.zona_envio_id is not None:
+            from gastroflow.services.public_notices import assert_delivery_available
+            assert_delivery_available(self.session, data.fecha_entrega, data.horario_entrega)
+
         cliente = self._upsert_cliente(data.nombre_apellido, data.telefono)
         codigo = next_business_code(self.session, "pedido_codigo_seq", "PED")
         costo_envio = self._snapshot_delivery_cost(data.zona_envio_id)

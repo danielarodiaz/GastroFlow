@@ -704,6 +704,11 @@ def cart_view() -> rx.Component:
                             ),
                         ),
                         rx.cond(
+                            PublicOrderState.delivery_restriction_message != "",
+                            rx.text(PublicOrderState.delivery_restriction_message, color=RED, font_weight="700", role="status"),
+                            rx.fragment(),
+                        ),
+                        rx.cond(
                             PublicOrderState.delivery_mode == "delivery",
                             rx.vstack(
                                 field(
@@ -817,8 +822,27 @@ def cart_view() -> rx.Component:
     )
 
 
+def public_notice_dialog() -> rx.Component:
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title(PublicOrderState.current_notice["titulo"]),
+            rx.dialog.description(rx.cond(PublicOrderState.current_notice["tipo"] == "oferta", "Oferta", "Aviso informativo")),
+            rx.box(
+                rx.text(PublicOrderState.current_notice["mensaje"], white_space="pre-wrap"),
+                overflow_y="auto", max_height="55dvh", padding="1rem 0",
+            ),
+            pill_button("Cerrar", on_click=PublicOrderState.close_notice, width="100%"),
+            on_escape_key_down=rx.prevent_default,
+            on_pointer_down_outside=rx.prevent_default,
+            max_width="min(480px, calc(100vw - 2rem))",
+        ),
+        open=PublicOrderState.notice_open,
+    )
+
+
 def public_page() -> rx.Component:
     return public_interactions(public_shell(
+        public_notice_dialog(),
         rx.cond(
             PublicOrderState.is_loading_catalog,
             rx.center(rx.hstack(rx.spinner(), rx.text("Cargando catálogo..."), align="center", role="status"), min_height="180px"),
