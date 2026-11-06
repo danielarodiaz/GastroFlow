@@ -895,7 +895,7 @@ class PublicOrderState(rx.State):
                     cart_item["discount"] = str(discount)
                     cart_item["discount_display"] = _money_text(discount)
                     cart_item["promo_label"] = (
-                        f"{getattr(priced_item, 'promocion_nombre', '') or 'Promo aplicada'}: $-{_money_text(discount)}"
+                        f"Promo aplicada: $-{_money_text(discount)}"
                         if discount > 0 else ""
                     )
                     cart_item["agregados_display"] = ", ".join(
