@@ -1,0 +1,60 @@
+sequenceDiagram
+    autonumber
+    actor C as Cliente
+    participant UI as Reflex public_ui
+    participant S as PublicOrderState
+    participant O as OrderService
+    participant DB as PostgreSQL
+    participant W as WhatsApp link
+    actor P as Personal
+    participant ST as Streamlit internal_app
+    participant A as AuthService y OrderService
+    participant OCR as QR/Tesseract (Azure opcional)
+    participant E as ExpenseService
+    C->>UI: Explora catálogo, arma carrito y checkout
+    UI->>S: Eventos de selección / submit_order
+    S->>DB: Lee reglas actuales y avisos
+    S->>O: create_public_order(PublicOrderInput)
+    O->>DB: Valida disponibilidad, productos, precios y pagos
+    O->>DB: Upsert cliente por teléfono
+    O->>DB: Genera PED-* y persiste pedido, ítems, pagos y agregados
+    DB-->>O: Pedido confirmado con snapshot
+    O-->>S: código, total y estado
+    S-->>UI: Muestra confirmación
+    opt Cliente elige enviar mensaje
+      UI->>W: Abre enlace wa.me preformateado
+      Note over C,W: El usuario debe enviar el mensaje; abrir el enlace no lo confirma
+    end
+
+    rect rgb(238, 246, 239)
+      Note over P,ST: Autenticación interna
+      P->>ST: Login
+      ST->>A: authenticate(username, password)
+      A->>DB: Busca usuario activo
+      A-->>ST: UsuarioRead y permisos
+      ST->>ST: Firma token HMAC con expiración en query param
+    end
+
+    rect rgb(245, 241, 230)
+      Note over P,DB: Gestión del pedido
+      P->>ST: Cambia estado o edita pedido
+      ST->>A: transition_order / flujo _update_order
+      A->>DB: Valida permiso y transición
+      A->>DB: Guarda estado; edición registra pedido_revision
+      DB-->>ST: Confirmación
+      ST-->>P: Actualiza listado y mensaje
+    end
+
+    rect rgb(239, 242, 249)
+      Note over P,DB: Carga de gasto asistida
+      P->>ST: Sube imagen o PDF
+      ST->>OCR: Extrae QR, texto y campos candidatos
+      OCR-->>ST: Borrador editable y confianza
+      P->>ST: Revisa y confirma ticket e ítems
+      ST->>E: create_expense_ticket(ExpenseTicketInput)
+      E->>DB: Valida, obtiene/crea motivo y marca
+      E->>DB: Genera GAS-* y persiste gasto y detalles
+      DB-->>E: Gasto guardado
+      E-->>ST: Código y total
+      ST-->>P: Muestra comprobante persistido
+    end

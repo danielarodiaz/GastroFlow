@@ -1,0 +1,56 @@
+erDiagram
+    USUARIO ||--o{ CAMBIO_ADMINISTRATIVO : registra
+    USUARIO ||--o{ PEDIDO_REVISION : realiza
+    CLIENTE ||--o{ PEDIDO : solicita
+    ZONA_ENVIO o|--o{ PEDIDO : aplica
+    PEDIDO ||--|{ PEDIDO_ITEM : contiene
+    PEDIDO ||--o{ PEDIDO_PAGO : registra
+    PEDIDO ||--o{ PEDIDO_REVISION : conserva
+    PEDIDO_ITEM ||--o{ PEDIDO_ITEM_AGREGADO : incluye
+    PRODUCTO ||--o{ PEDIDO_ITEM : producto
+    PRODUCTO o|--o{ PEDIDO_ITEM : segundo_sabor
+    CATEGORIA ||--o{ PEDIDO_ITEM : contexto_venta
+    AGREGADO ||--o{ PEDIDO_ITEM_AGREGADO : referencia
+    CATEGORIA ||--o{ PRODUCTO_CATEGORIA : ofrece
+    PRODUCTO ||--o{ PRODUCTO_CATEGORIA : se_ofrece
+    PRODUCTO ||--o{ COMBO_REGLA : sabor_a_o_b
+    PRODUCTO ||--o{ PROMOCION_PRODUCTO : elegible_en
+    PROMOCION ||--o{ PROMOCION_PRODUCTO : vincula
+    PROMOCION ||--o{ PROMOCION_CATEGORIA : alcance
+    CATEGORIA ||--o{ PROMOCION_CATEGORIA : elegible
+    PROMOCION ||--o{ PROMOCION_ITEM : requiere
+    PRODUCTO ||--o{ PROMOCION_ITEM : componente
+    CATEGORIA ||--o{ PROMOCION_ITEM : contexto
+    CATEGORIA ||--o{ AGREGADO_CATEGORIA : habilita
+    AGREGADO ||--o{ AGREGADO_CATEGORIA : habilitado_en
+    GASTO ||--|{ GASTO_DETALLE : detalla
+    GASTO o|--o{ GASTO_DOCUMENTO : adjunta
+    MOTIVO_GASTO ||--o{ GASTO_DETALLE : clasifica
+    MARCA o|--o{ GASTO_DETALLE : identifica
+
+    USUARIO { int id PK; string username UK; string password_hash; string rol; boolean activo; json permisos }
+    CAMBIO_ADMINISTRATIVO { int id PK; int usuario_id FK; string seccion; string accion; text resumen }
+    CLIENTE { int id PK; string nombre_apellido; string telefono UK }
+    PEDIDO { int id PK; string codigo UK; int cliente_id FK; int zona_envio_id FK; date fecha_entrega; string estado; decimal costo_envio; decimal monto_total; string submission_token UK }
+    PEDIDO_ITEM { int id PK; int pedido_id FK; int producto_id FK; int producto_combo_id FK; int categoria_venta_id FK; int cantidad; decimal precio_unitario; decimal subtotal }
+    PEDIDO_PAGO { int id PK; int pedido_id FK; string forma_pago; decimal monto }
+    PEDIDO_ITEM_AGREGADO { int id PK; int pedido_item_id FK; int agregado_id FK; string agregado_nombre; decimal subtotal }
+    PEDIDO_REVISION { int id PK; int pedido_id FK; int usuario_id FK; string accion; text motivo; text resumen_anterior; text resumen_nuevo }
+    CATEGORIA { int id PK; string codigo UK; string nombre; boolean visible_cliente; boolean activa }
+    PRODUCTO { int id PK; string codigo UK; string nombre; jsonb fotos; boolean activo }
+    PRODUCTO_CATEGORIA { int id PK; int producto_id FK; int categoria_id FK; decimal precio; boolean permite_pedido_especial; boolean activo }
+    PROMOCION { int id PK; string codigo UK; string nombre; string tipo; decimal precio_total_promocional; boolean activa }
+    PROMOCION_PRODUCTO { int id PK; int promocion_id FK; int producto_id FK }
+    PROMOCION_CATEGORIA { int id PK; int promocion_id FK; int categoria_id FK }
+    PROMOCION_ITEM { int id PK; int promocion_id FK; int producto_id FK; int categoria_id FK; int cantidad }
+    COMBO_REGLA { int id PK; int producto_a_id FK; int producto_b_id FK; string regla_precio; decimal precio_fijo_combo; boolean requiere_confirmacion }
+    ZONA_ENVIO { int id PK; string nombre; decimal costo; boolean activa }
+    AGREGADO { int id PK; string codigo UK; string nombre; decimal precio; boolean activo }
+    AGREGADO_CATEGORIA { int id PK; int agregado_id FK; int categoria_id FK }
+    GASTO { int id PK; string codigo UK; date fecha; string lugar_texto; decimal monto_total; string medio_pago }
+    GASTO_DETALLE { int id PK; int gasto_id FK; int motivo_gasto_id FK; int marca_id FK; decimal cantidad; decimal precio_unitario; decimal subtotal }
+    GASTO_DOCUMENTO { int id PK; int gasto_id FK; string archivo_url; string contenido_sha256 UK; string tipo_contenido; string estado }
+    MOTIVO_GASTO { int id PK; string nombre UK }
+    MARCA { int id PK; string nombre UK }
+    APP_CONFIG { int id PK; string key UK; string value }
+    AVISO_PUBLICO { int id PK; string titulo; string tipo; string accion; boolean habilitado; datetime inicio; datetime fin }

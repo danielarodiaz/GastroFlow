@@ -1,0 +1,39 @@
+flowchart LR
+    Cliente[Cliente navegador]
+    Personal[Personal / administrador]
+    subgraph Publica[Aplicación pública · Reflex]
+      PUI[gastroflow.public_ui]
+      PState[PublicOrderState]
+      PUI --> PState
+    end
+    subgraph Interna[Aplicación interna · Streamlit]
+      IUI[internal_app.streamlit_app]
+      IUI --> Login[Auth / permisos]
+      IUI --> Ops[Pedidos, gastos, catálogo, admin]
+      IUI --> OCR[Captura QR / OCR]
+    end
+    subgraph Core[Núcleo compartido Python]
+      Services[Servicios de dominio]
+      Models[Modelos SQLModel]
+      Domain[Enums, estados y errores]
+      Settings[Settings y engine]
+      Services --> Models
+      Services --> Domain
+      Models --> Settings
+    end
+    DB[(PostgreSQL · Supabase objetivo / PostgreSQL 16 local)]
+    Storage[(Disco uploaded_files o Supabase Storage)]
+    External[WhatsApp wa.me · link manual]
+    Azure[Azure Document Intelligence opcional]
+    Cliente --> PUI
+    Personal --> IUI
+    PState --> Services
+    Login --> Services
+    Ops --> Services
+    OCR --> Services
+    Settings --> DB
+    Ops --> Storage
+    PState --> Storage
+    PState -. crea link .-> External
+    OCR -. lector opcional .-> Azure
+    Alembic[Alembic migrations] --> DB
