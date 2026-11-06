@@ -387,6 +387,113 @@ def test_package_promotion_keeps_exact_total() -> None:
         assert priced_items[0].subtotal == Decimal("3500.00")
 
 
+@pytest.mark.parametrize("pair", ["especial_calabresa", "napolitana_fugazzetta"])
+@pytest.mark.parametrize(
+    "first_quantity,second_quantity,expected_total",
+    [
+        (1, 0, "9000.00"),
+        (0, 1, "9000.00"),
+        (2, 0, "15000.00"),
+        (0, 2, "15000.00"),
+        (1, 1, "15000.00"),
+        (2, 1, "24000.00"),
+        (1, 2, "24000.00"),
+        (2, 2, "30000.00"),
+        (3, 2, "39000.00"),
+    ],
+)
+def test_quantity_promotion_pools_eligible_flavors_in_same_category(
+    pair: str,
+    first_quantity: int,
+    second_quantity: int,
+    expected_total: str,
+) -> None:
+    with _session() as session:
+        ids = _catalog(session)
+
+        def add_oven_product(code: str, name: str) -> int:
+            product = Producto(codigo=code, nombre=name, unidad_venta=UnidadVenta.PIEZA)
+            session.add(product)
+            session.flush()
+            session.add(ProductoCategoria(
+                producto_id=product.id or 0,
+                categoria_id=ids["lista_horno"],
+                precio=Decimal("9000.00"),
+            ))
+            return product.id or 0
+
+        if pair == "especial_calabresa":
+            first_id = ids["especial"]
+            special_price = session.exec(select(ProductoCategoria).where(
+                ProductoCategoria.producto_id == first_id,
+                ProductoCategoria.categoria_id == ids["lista_horno"],
+            )).one()
+            special_price.precio = Decimal("9000.00")
+            session.add(special_price)
+            second_id = add_oven_product("PROD-CALABRESA", "Calabresa")
+        else:
+            first_id = add_oven_product("PROD-NAPOLITANA", "Napolitana")
+            second_id = add_oven_product("PROD-FUGAZZETTA", "Fugazzetta")
+
+        promo = Promocion(
+            codigo=f"PROMO_{pair.upper()}_2",
+            nombre=f"Promo flexible {pair}",
+            tipo=TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
+            cantidad_minima=2,
+            precio_unitario_promocional=Decimal("7500.00"),
+        )
+        session.add(promo)
+        session.flush()
+        session.add_all([
+            PromocionProducto(promocion_id=promo.id or 0, producto_id=first_id),
+            PromocionProducto(promocion_id=promo.id or 0, producto_id=second_id),
+            PromocionCategoria(promocion_id=promo.id or 0, categoria_id=ids["lista_horno"]),
+        ])
+        session.commit()
+
+        requested = []
+        if first_quantity:
+            requested.append(OrderItemInput(first_id, first_quantity, contexto_origen="LISTA_HORNO"))
+        if second_quantity:
+            requested.append(OrderItemInput(second_id, second_quantity, contexto_origen="LISTA_HORNO"))
+        priced = OrderService(session)._price_items(requested)
+
+        assert sum(line.subtotal for line in priced) == Decimal(expected_total)
+        if first_quantity + second_quantity >= 2:
+            assert any(line.promocion_nombre == promo.nombre for line in priced)
+        else:
+            assert not any(line.promocion_nombre for line in priced)
+
+
+def test_flexible_promotion_uses_leftovers_that_maximize_customer_saving() -> None:
+    with _session() as session:
+        ids = _catalog(session)
+        promo = Promocion(
+            codigo="PROMO_FLEXIBLE_MEJOR_AHORRO",
+            nombre="Promo flexible",
+            tipo=TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
+            cantidad_minima=2,
+            precio_unitario_promocional=Decimal("5000.00"),
+        )
+        session.add(promo)
+        session.flush()
+        session.add_all([
+            PromocionProducto(promocion_id=promo.id or 0, producto_id=ids["muzza"]),
+            PromocionProducto(promocion_id=promo.id or 0, producto_id=ids["especial"]),
+            PromocionCategoria(promocion_id=promo.id or 0, categoria_id=ids["lista_horno"]),
+        ])
+        session.commit()
+
+        priced = OrderService(session)._price_items([
+            OrderItemInput(ids["muzza"], 1, contexto_origen="LISTA_HORNO"),
+            OrderItemInput(ids["especial"], 2, contexto_origen="LISTA_HORNO"),
+        ])
+
+        assert [line.subtotal for line in priced] == [Decimal("5500.00"), Decimal("10000.00")]
+        assert not priced[0].promocion_nombre
+        assert priced[1].promocion_nombre == promo.nombre
+
+
 @pytest.mark.parametrize("quantity", range(1, 10))
 @pytest.mark.parametrize(
     "minimum,base_price,promo_unit,package_total,context",

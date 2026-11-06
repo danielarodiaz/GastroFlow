@@ -28,7 +28,12 @@ En la gestión interna, abrir **Promos** y elegir una promo o crearla:
 La promo se evalúa por separado dentro de cada categoría seleccionada. Una
 Muzzarella de Horno y otra de Comer no completan un grupo de dos. Una promo
 habilitada solamente en Horno nunca se aplica a la presentación de Comer.
-Las unidades fuera de grupos completos mantienen el precio base.
+Dentro de una misma categoría, las cantidades de todos los productos elegibles
+se suman para formar el grupo. Por ejemplo, si Especial y Calabresa son
+elegibles con cantidad mínima 2, se aplica tanto a 2 Especiales, 2 Calabresas
+como a 1 Especial + 1 Calabresa. Las unidades fuera de grupos completos
+mantienen el precio base; si sus precios normales difieren, se descuentan las
+unidades que produzcan el mayor ahorro para el cliente.
 
 ## Paquete combinado
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import date, time
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 from urllib.parse import quote
 from sqlalchemy import text
 
@@ -116,13 +116,6 @@ class PricedAddon:
     cantidad: int
     precio_unitario: Decimal
     subtotal: Decimal
-
-
-@dataclass(frozen=True)
-class AppliedPromotion:
-    precio_unitario: Decimal
-    cantidad_minima: int
-    precio_total: Decimal | None = None
 
 
 class OrderService:
@@ -419,12 +412,6 @@ class OrderService:
             special_by_index[index] = item.producto_combo_id is not None or any(
                 origin_relations[product_id].permite_pedido_especial for product_id in product_ids
             )
-        promotional_prices = (
-            {}
-            if sale_category.codigo in {EVENTS_CONTEXT_CODE, WHOLESALE_CONTEXT_CODE}
-            else self._eligible_promotions([item for index, item in enumerate(items) if not special_by_index[index]], category_prices, sale_category.id or 0)
-        )
-
         priced_items: list[PricedItem] = []
         for index, item in enumerate(items):
             if item.cantidad <= 0:
@@ -437,13 +424,6 @@ class OrderService:
             requires_confirmation = special
             unit_price = self._money(base_price)
             subtotal = self._money(base_price * item.cantidad)
-            promotion = promotional_prices.get(product.id or 0)
-            if promotion is not None and item.producto_combo_id is None and not special:
-                unit_price, subtotal = self._apply_promotion_to_line(
-                    base_price=base_price,
-                    quantity=item.cantidad,
-                    promotion=promotion,
-                )
             if item.producto_combo_id is not None:
                 self._validate_combo_origin(item, origin_category)
                 combo_product = products[item.producto_combo_id]
@@ -467,7 +447,9 @@ class OrderService:
                     es_especial=special,
                 )
             )
-        return priced_items
+        if sale_category.codigo in {EVENTS_CONTEXT_CODE, WHOLESALE_CONTEXT_CODE}:
+            return priced_items
+        return self._apply_quantity_promotions(priced_items, sale_category.id or 0)
 
     @staticmethod
     def _validate_combo_origin(item: OrderItemInput, category: Categoria) -> None:
@@ -547,32 +529,12 @@ class OrderService:
             raise ValidationError("El producto no tiene precio configurado para el contexto.")
         return category_prices[product_id]
 
-    def _apply_promotion_to_line(
+    def _apply_quantity_promotions(
         self,
-        *,
-        base_price: Decimal,
-        quantity: int,
-        promotion: AppliedPromotion,
-    ) -> tuple[Decimal, Decimal]:
-        subtotal = self._promotion_line_total(quantity, base_price, promotion)
-        effective_unit = subtotal / Decimal(quantity)
-        return self._money(effective_unit), self._money(subtotal)
-
-    def _eligible_promotions(
-        self,
-        items: list[OrderItemInput],
-        category_prices: dict[int, Decimal],
+        priced_items: list[PricedItem],
         category_id: int,
-    ) -> dict[int, AppliedPromotion]:
-        quantities_by_product = {
-            item.producto_id: sum(
-                i.cantidad
-                for i in items
-                if i.producto_id == item.producto_id and i.producto_combo_id is None
-            )
-            for item in items
-            if item.producto_combo_id is None
-        }
+    ) -> list[PricedItem]:
+        """Apply complete promo groups across all eligible products in a category."""
         promotions = self.session.exec(
             select(Promocion).join(PromocionCategoria, PromocionCategoria.promocion_id == Promocion.id).where(
                 Promocion.activa == True,  # noqa: E712
@@ -581,60 +543,108 @@ class OrderService:
                 ~select(PromocionItem.id).where(PromocionItem.promocion_id == Promocion.id).exists(),
             )
         ).all()
-
-        prices: dict[int, AppliedPromotion] = {}
+        if not promotions:
+            return priced_items
         links = self.session.exec(select(PromocionProducto).where(
             PromocionProducto.promocion_id.in_([promotion.id for promotion in promotions])
-        )).all() if promotions else []
+        )).all()
         products_by_promotion: dict[int, set[int]] = {}
         for link in links:
             products_by_promotion.setdefault(link.promocion_id, set()).add(link.producto_id)
+
+        candidates: list[tuple[Decimal, int, str, dict[int, Decimal]]] = []
         for promotion in promotions:
             eligible_product_ids = products_by_promotion.get(promotion.id, set())
-            eligible_quantity = sum(
-                quantity
-                for product_id, quantity in quantities_by_product.items()
-                if product_id in eligible_product_ids
-            )
-            if eligible_quantity < promotion.cantidad_minima:
+            eligible_indexes = [
+                index
+                for index, line in enumerate(priced_items)
+                if line.item.producto_id in eligible_product_ids
+                and line.item.producto_combo_id is None
+                and not line.es_especial
+                and line.precio_base is not None
+            ]
+            eligible_quantity = sum(priced_items[index].item.cantidad for index in eligible_indexes)
+            group_count = eligible_quantity // promotion.cantidad_minima
+            discounted_units = group_count * promotion.cantidad_minima
+            if not discounted_units:
                 continue
-            for product_id in eligible_product_ids:
-                if product_id not in quantities_by_product:
-                    continue
-                candidate = AppliedPromotion(
-                    precio_unitario=promotion.precio_unitario_promocional,
-                    cantidad_minima=promotion.cantidad_minima,
-                    precio_total=promotion.precio_total_promocional,
+
+            # When a group has leftovers, discount the units that maximize the
+            # customer's saving and leave the cheapest eligible units at base price.
+            consumed: dict[int, int] = {}
+            remaining = discounted_units
+            for index in sorted(
+                eligible_indexes,
+                key=lambda item_index: (priced_items[item_index].precio_base, -item_index),
+                reverse=True,
+            ):
+                units = min(priced_items[index].item.cantidad, remaining)
+                if units:
+                    consumed[index] = units
+                    remaining -= units
+                if not remaining:
+                    break
+
+            promotional_total = self._money(
+                group_count * (
+                    promotion.precio_total_promocional
+                    if promotion.precio_total_promocional is not None
+                    else promotion.precio_unitario_promocional * promotion.cantidad_minima
                 )
-                current = prices.get(product_id)
-                if current is None or self._promotion_line_total(
-                    quantities_by_product[product_id],
-                    category_price=category_prices.get(product_id),
-                    promotion=candidate,
-                ) < self._promotion_line_total(
-                    quantities_by_product[product_id],
-                    category_price=category_prices.get(product_id),
-                    promotion=current,
-                ):
-                    prices[product_id] = candidate
-        return prices
+            )
+            selected_base_total = sum(
+                (priced_items[index].precio_base or Decimal("0")) * units
+                for index, units in consumed.items()
+            )
+            if promotional_total >= selected_base_total:
+                continue
+            shares = self._allocate_promotion_total(
+                promotional_total,
+                [consumed[index] for index in consumed],
+            )
+            totals = {
+                index: self._money(
+                    shares[position]
+                    + (priced_items[index].precio_base or Decimal("0"))
+                    * (priced_items[index].item.cantidad - consumed[index])
+                )
+                for position, index in enumerate(consumed)
+            }
+            saving = sum(priced_items[index].subtotal - total for index, total in totals.items())
+            if saving > 0:
+                candidates.append((saving, promotion.id or 0, promotion.nombre, totals))
+
+        result = list(priced_items)
+        used_indexes: set[int] = set()
+        for _, _, promotion_name, totals in sorted(candidates, key=lambda entry: (-entry[0], entry[1])):
+            if used_indexes.intersection(totals):
+                continue
+            for index, subtotal in totals.items():
+                quantity = priced_items[index].item.cantidad
+                result[index] = replace(
+                    priced_items[index],
+                    subtotal=subtotal,
+                    precio_unitario=self._money(subtotal / quantity),
+                    promocion_nombre=promotion_name,
+                )
+            used_indexes.update(totals)
+        return result
 
     @staticmethod
-    def _promotion_line_total(
-        quantity: int,
-        category_price: Decimal | None,
-        promotion: AppliedPromotion,
-    ) -> Decimal:
-        # Both promotion formats apply to complete groups; extras keep base price.
-        package_price = (
-            promotion.precio_total
-            if promotion.precio_total is not None
-            else promotion.precio_unitario * promotion.cantidad_minima
+    def _allocate_promotion_total(total: Decimal, quantities: list[int]) -> list[Decimal]:
+        """Allocate an exact package total by discounted units, including residual cents."""
+        total_units = sum(quantities)
+        raw = [total * Decimal(quantity) / Decimal(total_units) for quantity in quantities]
+        shares = [amount.quantize(MONEY_QUANT, rounding=ROUND_DOWN) for amount in raw]
+        residual_cents = int((total - sum(shares)) / MONEY_QUANT)
+        order = sorted(
+            range(len(quantities)),
+            key=lambda index: raw[index] - shares[index],
+            reverse=True,
         )
-        package_count = quantity // promotion.cantidad_minima
-        remainder = quantity % promotion.cantidad_minima
-        base_price = category_price if category_price is not None else promotion.precio_unitario
-        return (package_price * package_count) + (base_price * remainder)
+        for index in order[:residual_cents]:
+            shares[index] += MONEY_QUANT
+        return shares
 
     def _get_combo_rule(self, product_a_id: int, product_b_id: int) -> ComboRegla:
         combo_rule = self.session.exec(
