@@ -560,7 +560,6 @@ class OrderService:
                 for index, line in enumerate(priced_items)
                 if line.item.producto_id in eligible_product_ids
                 and line.item.producto_combo_id is None
-                and not line.es_especial
                 and line.precio_base is not None
             ]
             eligible_quantity = sum(priced_items[index].item.cantidad for index in eligible_indexes)

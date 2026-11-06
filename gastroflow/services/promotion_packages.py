@@ -42,13 +42,12 @@ def apply_package_promotions(session: Session, priced: list["PricedItem"], conte
     for promotion, component in rows:
         packages.setdefault(promotion.id, (promotion, []))[1].append(component)
 
-    # Only regular retail prices participate; wholesale, Events and half pizzas
-    # keep their own pricing rules. Match product AND originating category.
+    # Wholesale, Events and half pizzas keep their own pricing rules. A
+    # single-flavor special order may participate when explicitly configured.
     indexes_by_key = {}
     for index, line in enumerate(priced):
         if (
             line.item.producto_combo_id is None
-            and not line.es_especial
             and line.categoria_venta_codigo == contexts[index]
             and contexts[index] not in {"MAYORISTA", "EVENTOS"}
         ):

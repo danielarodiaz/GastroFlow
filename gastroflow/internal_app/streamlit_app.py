@@ -1528,7 +1528,7 @@ def _render_promotion_editor(promos: list[Promocion], products: list[Producto]) 
             Categoria.activa == True, Categoria.es_automatica == False, Categoria.codigo != "EVENTOS",
         ).order_by(Categoria.orden, Categoria.nombre)).all()
         relations = session.exec(select(ProductoCategoria).where(
-            ProductoCategoria.activo == True, ProductoCategoria.permite_pedido_especial == False,
+            ProductoCategoria.activo == True,
         )).all()
         links = session.exec(select(PromocionProducto).where(PromocionProducto.promocion_id == selected.id)).all() if selected else []
         scopes = session.exec(select(PromocionCategoria).where(PromocionCategoria.promocion_id == selected.id)).all() if selected else []

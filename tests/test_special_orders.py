@@ -105,22 +105,39 @@ def test_events_minimum_includes_regular_and_special_pizzas_only_in_events(speci
         assert service._price_items(items)[0].precio_unitario == Decimal("6500")
 
 
-def test_special_uses_applicable_tariff_without_regular_promotions(specials):
+def test_special_fugazzetta_and_napolitana_share_configured_quantity_promotion(specials):
     session, ids, products, _ = specials
-    promo = Promocion(codigo="SPECIAL_TEST", nombre="No aplicar", tipo=TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
-        cantidad_minima=2, precio_unitario_promocional=Decimal("1"))
+    promo = Promocion(
+        codigo="PROMO_FUGA_NAPO_HORNO_2",
+        nombre="FUGAZZETTA Y NAPOLITANA X2",
+        tipo=TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
+        cantidad_minima=2,
+        precio_unitario_promocional=Decimal("7000"),
+    )
     session.add(promo)
     session.flush()
-    session.add_all([PromocionProducto(promocion_id=promo.id, producto_id=products["Fugazzetta"].id),
-        PromocionCategoria(promocion_id=promo.id, categoria_id=ids["lista_horno"])])
+    configure_promotion(
+        session,
+        promo,
+        [ids["lista_horno"]],
+        [products["Fugazzetta"].id, products["Napolitana"].id],
+        [],
+    )
     session.commit()
-    for quantity in (2, 10):
-        line = OrderService(session)._price_items([OrderItemInput(products["Fugazzetta"].id, quantity)])[0]
-        assert line.categoria_venta_id == ids["lista_horno" if quantity == 2 else "mayorista"]
-        assert line.precio_unitario == Decimal("7500" if quantity == 2 else "5500")
-        assert line.es_especial and line.requiere_confirmacion
-    with pytest.raises(ValidationError, match="pertenecer"):
-        configure_promotion(session, promo, [ids["lista_horno"]], [products["Fugazzetta"].id], [])
+
+    single = OrderService(session)._price_items([
+        OrderItemInput(products["Fugazzetta"].id, 1, contexto_origen="LISTA_HORNO")
+    ])[0]
+    assert single.precio_unitario == Decimal("7500")
+    assert not single.promocion_nombre
+
+    combined = OrderService(session)._price_items([
+        OrderItemInput(products["Fugazzetta"].id, 1, contexto_origen="LISTA_HORNO"),
+        OrderItemInput(products["Napolitana"].id, 1, contexto_origen="LISTA_HORNO"),
+    ])
+    assert [line.subtotal for line in combined] == [Decimal("7000"), Decimal("7000")]
+    assert all(line.promocion_nombre == promo.nombre for line in combined)
+    assert all(line.es_especial and line.requiere_confirmacion for line in combined)
 
 
 def test_twenty_pizza_order_applies_wholesale_to_all_five_flavors_and_stays_pending(specials):

@@ -494,6 +494,51 @@ def test_flexible_promotion_uses_leftovers_that_maximize_customer_saving() -> No
         assert priced[1].promocion_nombre == promo.nombre
 
 
+def test_fugazzetta_and_napolitana_special_orders_receive_flexible_promotion() -> None:
+    with _session() as session:
+        ids = _catalog(session)
+
+        def add_special(code: str, name: str, price: str) -> int:
+            product = Producto(codigo=code, nombre=name, unidad_venta=UnidadVenta.PIEZA)
+            session.add(product)
+            session.flush()
+            session.add(ProductoCategoria(
+                producto_id=product.id or 0,
+                categoria_id=ids["lista_horno"],
+                precio=Decimal(price),
+                visible=False,
+                permite_pedido_especial=True,
+            ))
+            return product.id or 0
+
+        fugazzetta_id = add_special("PROD-FUGA-ESPECIAL", "Fugazzetta", "7500.00")
+        napolitana_id = add_special("PROD-NAPO-ESPECIAL", "Napolitana", "8000.00")
+        promo = Promocion(
+            codigo="PROMO_FUGA_NAPO_HORNO_2",
+            nombre="FUGAZZETTA Y NAPOLITANA X2",
+            tipo=TipoPromocion.PRECIO_UNITARIO_POR_CANTIDAD,
+            cantidad_minima=2,
+            precio_unitario_promocional=Decimal("7000.00"),
+        )
+        session.add(promo)
+        session.flush()
+        session.add_all([
+            PromocionProducto(promocion_id=promo.id or 0, producto_id=fugazzetta_id),
+            PromocionProducto(promocion_id=promo.id or 0, producto_id=napolitana_id),
+            PromocionCategoria(promocion_id=promo.id or 0, categoria_id=ids["lista_horno"]),
+        ])
+        session.commit()
+
+        priced = OrderService(session)._price_items([
+            OrderItemInput(fugazzetta_id, 1, contexto_origen="LISTA_HORNO"),
+            OrderItemInput(napolitana_id, 1, contexto_origen="LISTA_HORNO"),
+        ])
+
+        assert [line.subtotal for line in priced] == [Decimal("7000.00"), Decimal("7000.00")]
+        assert all(line.promocion_nombre == promo.nombre for line in priced)
+        assert all(line.es_especial and line.requiere_confirmacion for line in priced)
+
+
 @pytest.mark.parametrize("quantity", range(1, 10))
 @pytest.mark.parametrize(
     "minimum,base_price,promo_unit,package_total,context",
